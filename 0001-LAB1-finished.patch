@@ -1,0 +1,99 @@
+From 66fecd6b894ededfc9a8fb01c324e395712b55b8 Mon Sep 17 00:00:00 2001
+From: Aaron <kljsandjb@me.com>
+Date: Sun, 26 Apr 2020 15:38:24 +0200
+Subject: [PATCH] LAB1 finished!
+
+---
+ kern/kdebug.c  |  9 +++++++++
+ kern/monitor.c | 29 ++++++++++++++++++++++++++++-
+ lib/printfmt.c |  7 +++----
+ 3 files changed, 40 insertions(+), 5 deletions(-)
+
+diff --git a/kern/kdebug.c b/kern/kdebug.c
+index 9547143..e287098 100644
+--- a/kern/kdebug.c
++++ b/kern/kdebug.c
+@@ -179,6 +179,15 @@ debuginfo_eip(uintptr_t addr, struct Eipdebuginfo *info)
+ 	//	Look at the STABS documentation and <inc/stab.h> to find
+ 	//	which one.
+ 	// Your code here.
++	stab_binsearch(stabs, &lline, &rline, N_SLINE, addr);
++	if (lline <= rline)
++	{
++		info->eip_line = stabs[lline].n_desc;
++	}
++	else
++	{
++		return -1;
++	}
+ 
+ 
+ 	// Search backwards from the line number for the relevant filename
+diff --git a/kern/monitor.c b/kern/monitor.c
+index e137e92..db8dffa 100644
+--- a/kern/monitor.c
++++ b/kern/monitor.c
+@@ -24,6 +24,7 @@ struct Command {
+ static struct Command commands[] = {
+ 	{ "help", "Display this list of commands", mon_help },
+ 	{ "kerninfo", "Display information about the kernel", mon_kerninfo },
++	{ "backtrace", "Display backtrace to current function call", mon_backtrace}
+ };
+ 
+ /***** Implementations of basic kernel monitor commands *****/
+@@ -57,7 +58,33 @@ mon_kerninfo(int argc, char **argv, struct Trapframe *tf)
+ int
+ mon_backtrace(int argc, char **argv, struct Trapframe *tf)
+ {
+-	// Your code here.
++	cprintf("Stack backtrace\n");
++
++	uint32_t ebp = 0;
++	uintptr_t eip = 0;
++	asm volatile("movl %%ebp,%0" : "=r" (ebp)); // now should be after prologue
++
++	while(ebp != 0) // in entry.S, ebp got initialized to 0, where we should stop
++	{
++		eip = (uintptr_t)*((uint32_t *)ebp + 1);
++		struct Eipdebuginfo debuginfo = {NULL, 0, NULL, 0, 0,  0};
++		if (debuginfo_eip(eip, &debuginfo) == -1)
++			return -1;
++
++		int fn_name_len = debuginfo.eip_fn_namelen;
++		char fn_name[fn_name_len + 1];
++		const char *eip_fn_name = debuginfo.eip_fn_name;
++		for (int i = 0; i < fn_name_len; i ++)
++		{
++			fn_name[i] = eip_fn_name[i];
++		}
++		fn_name[fn_name_len] = '\0';
++		cprintf("ebp %08x  eip %08x  args %08x %08x %08x %08x %08x\n\n  \t\t%s:%d: %s+%d\n",
++			         ebp, eip, *((uint32_t *)ebp + 2), *((uint32_t *)ebp + 3), *((uint32_t *)ebp + 4), *((uint32_t *)ebp + 5), *((uint32_t *)ebp + 6),
++			         debuginfo.eip_file, debuginfo.eip_line, fn_name, debuginfo.eip_fn_narg);
++		ebp = *(uint32_t *)ebp;
++	}
++
+ 	return 0;
+ }
+ 
+diff --git a/lib/printfmt.c b/lib/printfmt.c
+index 28e01c9..0dca3e4 100644
+--- a/lib/printfmt.c
++++ b/lib/printfmt.c
+@@ -205,10 +205,9 @@ vprintfmt(void (*putch)(int, void*), void *putdat, const char *fmt, va_list ap)
+ 
+ 		// (unsigned) octal
+ 		case 'o':
+-			// Replace this with your code.
+-			putch('X', putdat);
+-			putch('X', putdat);
+-			putch('X', putdat);
++			num = getuint(&ap, lflag);
++			base = 8;
++			goto number;
+ 			break;
+ 
+ 		// pointer
+-- 
+2.24.3 (Apple Git-128)
+
