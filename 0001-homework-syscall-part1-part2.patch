@@ -1,0 +1,404 @@
+From 1805f02a2606dacc52babf72937bbcbbc4ac7036 Mon Sep 17 00:00:00 2001
+From: Aaron <kljsandjb@me.com>
+Date: Thu, 28 May 2020 18:15:31 +0200
+Subject: [PATCH] homework syscall part1 & part2
+
+https://pdos.csail.mit.edu/6.828/2018/homework/xv6-syscall.html
+---
+ Makefile  |  3 ++-
+ date.c    | 19 +++++++++++++++++++
+ proc.c    | 11 ++++++-----
+ syscall.c | 42 ++++++++++++++++++++++++++++++++++++++++++
+ syscall.h |  1 +
+ sysfile.c | 25 ++++++++++++++++++++++++-
+ sysproc.c | 22 ++++++++++++++++++++++
+ trap.c    |  2 +-
+ user.h    |  1 +
+ usys.S    |  1 +
+ 10 files changed, 119 insertions(+), 8 deletions(-)
+ create mode 100644 date.c
+
+diff --git a/Makefile b/Makefile
+index 09d790c..e26ed07 100644
+--- a/Makefile
++++ b/Makefile
+@@ -157,7 +157,7 @@ _forktest: forktest.o $(ULIB)
+ 	$(OBJDUMP) -S _forktest > forktest.asm
+ 
+ mkfs: mkfs.c fs.h
+-	gcc -Werror -Wall -o mkfs mkfs.c
++	gcc -Werror -Wno-nullability-completeness -Wall -o mkfs mkfs.c
+ 
+ # Prevent deletion of intermediate files, e.g. cat.o, after first build, so
+ # that disk image changes after first build are persistent until clean.  More
+@@ -181,6 +181,7 @@ UPROGS=\
+ 	_usertests\
+ 	_wc\
+ 	_zombie\
++	_date\
+ 
+ fs.img: mkfs README $(UPROGS)
+ 	./mkfs fs.img README $(UPROGS)
+diff --git a/date.c b/date.c
+new file mode 100644
+index 0000000..64cd3bc
+--- /dev/null
++++ b/date.c
+@@ -0,0 +1,19 @@
++#include "types.h"
++#include "user.h"
++#include "date.h"
++
++int
++main(int argc, char *argv[])
++{
++  struct rtcdate r;
++
++  if (date(&r)) {
++    printf(2, "date failed\n");
++    exit();
++  }
++
++  // your code to print the time in any format you like...
++  // printf(1, "hour: %d, minute: %d, second: %d\n", r.hour, r.minute, r.second);
++
++  exit();
++}
+\ No newline at end of file
+diff --git a/proc.c b/proc.c
+index 806b1b1..4fb202e 100644
+--- a/proc.c
++++ b/proc.c
+@@ -126,9 +126,9 @@ userinit(void)
+   p = allocproc();
+   
+   initproc = p;
+-  if((p->pgdir = setupkvm()) == 0)
++  if((p->pgdir = setupkvm()) == 0)    // setup process's page table pages for context switch, mapping kernel content to address space
+     panic("userinit: out of memory?");
+-  inituvm(p->pgdir, _binary_initcode_start, (int)_binary_initcode_size);
++  inituvm(p->pgdir, _binary_initcode_start, (int)_binary_initcode_size);  // now mapping self's content
+   p->sz = PGSIZE;
+   memset(p->tf, 0, sizeof(*p->tf));
+   p->tf->cs = (SEG_UCODE << 3) | DPL_USER;
+@@ -136,8 +136,8 @@ userinit(void)
+   p->tf->es = p->tf->ds;
+   p->tf->ss = p->tf->ds;
+   p->tf->eflags = FL_IF;
+-  p->tf->esp = PGSIZE;
+-  p->tf->eip = 0;  // beginning of initcode.S
++  p->tf->esp = PGSIZE; // User stack
++  p->tf->eip = 0;  // beginning of initcode.S, now virtual address (0 - 4095) mapped to physical address loaded of executable file
+ 
+   safestrcpy(p->name, "initcode", sizeof(p->name));
+   p->cwd = namei("/");
+@@ -340,7 +340,7 @@ scheduler(void)
+       // to release ptable.lock and then reacquire it
+       // before jumping back to us.
+       c->proc = p;
+-      switchuvm(p);
++      switchuvm(p); // enter user space by setting %cr3 register to user space pgdir
+       p->state = RUNNING;
+ 
+       swtch(&(c->scheduler), p->context);
+@@ -396,6 +396,7 @@ yield(void)
+ void
+ forkret(void)
+ {
++  // after prologue: push %ebp; mov %esp, %ebp... hit return in GDB
+   static int first = 1;
+   // Still holding ptable.lock from scheduler.
+   release(&ptable.lock);
+diff --git a/syscall.c b/syscall.c
+index ee85261..4702ebf 100644
+--- a/syscall.c
++++ b/syscall.c
+@@ -103,6 +103,7 @@ extern int sys_unlink(void);
+ extern int sys_wait(void);
+ extern int sys_write(void);
+ extern int sys_uptime(void);
++extern int sys_date(void);
+ 
+ static int (*syscalls[])(void) = {
+ [SYS_fork]    sys_fork,
+@@ -126,6 +127,33 @@ static int (*syscalls[])(void) = {
+ [SYS_link]    sys_link,
+ [SYS_mkdir]   sys_mkdir,
+ [SYS_close]   sys_close,
++[SYS_date]    sys_date,
++};
++
++// use a string table for the name, any better idea?
++static char *syscallnames[] = {
++[SYS_fork]    "fork",
++[SYS_exit]    "exit",
++[SYS_wait]    "wait",
++[SYS_pipe]    "pipe",
++[SYS_read]    "read",
++[SYS_kill]    "kill",
++[SYS_exec]    "exec",
++[SYS_fstat]   "fstat",
++[SYS_chdir]   "chdir",
++[SYS_dup]     "dup",
++[SYS_getpid]  "getpid",
++[SYS_sbrk]    "sbrk",
++[SYS_sleep]   "sleep",
++[SYS_uptime]  "uptime",
++[SYS_open]    "open",
++[SYS_write]   "write",
++[SYS_mknod]   "mknod",
++[SYS_unlink]  "unlink",
++[SYS_link]    "link",
++[SYS_mkdir]   "mkdir",
++[SYS_close]   "close",
++[SYS_date]    "date",
+ };
+ 
+ void
+@@ -136,7 +164,21 @@ syscall(void)
+ 
+   num = curproc->tf->eax;
+   if(num > 0 && num < NELEM(syscalls) && syscalls[num]) {
++    // should put before the real syscall, e.g. what if exec uses a
++    // new image replace the old one, the arguments would be nowhere to track
++    //
++    // not all sys calls got argument, it should be case by case
++    // keep user stack less than curproc->sz when tracing arguments,
++    // but how to tell arguments' number, type? using a jump table (switch)?
++    //
++    // or go into each syscall's wrapper to print them out?
++    // uint first_addr = curproc->tf->esp + 4;
++    // char *argument;
++    // if ((argstr(0, &argument)) != -1 && first_addr < curproc->sz)
++    //   cprintf("first argument: %s\n", argument);
++
+     curproc->tf->eax = syscalls[num]();
++    cprintf("%s -> %d\n\n", syscallnames[num], curproc->tf->eax);
+   } else {
+     cprintf("%d %s: unknown sys call %d\n",
+             curproc->pid, curproc->name, num);
+diff --git a/syscall.h b/syscall.h
+index bc5f356..1a620b9 100644
+--- a/syscall.h
++++ b/syscall.h
+@@ -20,3 +20,4 @@
+ #define SYS_link   19
+ #define SYS_mkdir  20
+ #define SYS_close  21
++#define SYS_date   22
+diff --git a/sysfile.c b/sysfile.c
+index bfe61b7..70e14b0 100644
+--- a/sysfile.c
++++ b/sysfile.c
+@@ -60,6 +60,7 @@ sys_dup(void)
+ 
+   if(argfd(0, 0, &f) < 0)
+     return -1;
++  cprintf("dup will make a duplication of file object: %p\n", f);
+   if((fd=fdalloc(f)) < 0)
+     return -1;
+   filedup(f);
+@@ -75,6 +76,7 @@ sys_read(void)
+ 
+   if(argfd(0, 0, &f) < 0 || argint(2, &n) < 0 || argptr(1, &p, n) < 0)
+     return -1;
++  cprintf("read on file object %p, file buffer address: %p, size %d\n", f, p, n);
+   return fileread(f, p, n);
+ }
+ 
+@@ -87,6 +89,7 @@ sys_write(void)
+ 
+   if(argfd(0, 0, &f) < 0 || argint(2, &n) < 0 || argptr(1, &p, n) < 0)
+     return -1;
++  cprintf("write to file object %p, file buffer address: %p, size %d\n",f, p, n);
+   return filewrite(f, p, n);
+ }
+ 
+@@ -98,6 +101,7 @@ sys_close(void)
+ 
+   if(argfd(0, &fd, &f) < 0)
+     return -1;
++  cprintf("close file descriptor %d previously pointed to file object %p\n", fd, f);
+   myproc()->ofile[fd] = 0;
+   fileclose(f);
+   return 0;
+@@ -111,6 +115,7 @@ sys_fstat(void)
+ 
+   if(argfd(0, 0, &f) < 0 || argptr(1, (void*)&st, sizeof(*st)) < 0)
+     return -1;
++  cprintf("fstat check file object %p, store file status on %p\n", f, st);
+   return filestat(f, st);
+ }
+ 
+@@ -123,6 +128,7 @@ sys_link(void)
+ 
+   if(argstr(0, &old) < 0 || argstr(1, &new) < 0)
+     return -1;
++  cprintf("link create new link %s to existing file %s\n", new, old);
+ 
+   begin_op();
+   if((ip = namei(old)) == 0){
+@@ -191,7 +197,7 @@ sys_unlink(void)
+ 
+   if(argstr(0, &path) < 0)
+     return -1;
+-
++  cprintf("unlink delete %s from file system\n", path);
+   begin_op();
+   if((dp = nameiparent(path, name)) == 0){
+     end_op();
+@@ -292,6 +298,16 @@ sys_open(void)
+ 
+   if(argstr(0, &path) < 0 || argint(1, &omode) < 0)
+     return -1;
++  cprintf("open file %s with mode ", path);
++  if (omode & O_CREATE)
++    cprintf("O_CREATE ");
++  if (omode & O_RDONLY)
++    cprintf("O_RDONLY ");
++  if (omode & O_RDWR)
++    cprintf("O_RDWR ");
++  if (omode & O_WRONLY)
++    cprintf("O_WRONLY ");
++  cprintf("\n");
+ 
+   begin_op();
+ 
+@@ -343,6 +359,7 @@ sys_mkdir(void)
+     end_op();
+     return -1;
+   }
++  cprintf("mkdir create directory %s\n", path);
+   iunlockput(ip);
+   end_op();
+   return 0;
+@@ -363,6 +380,7 @@ sys_mknod(void)
+     end_op();
+     return -1;
+   }
++  cprintf("mknod creates file node %p on file path %s, major %d, minor %d\n", ip, path, major, minor);
+   iunlockput(ip);
+   end_op();
+   return 0;
+@@ -380,6 +398,7 @@ sys_chdir(void)
+     end_op();
+     return -1;
+   }
++  cprintf("chdir change to %s\n", path);
+   ilock(ip);
+   if(ip->type != T_DIR){
+     iunlockput(ip);
+@@ -403,6 +422,7 @@ sys_exec(void)
+   if(argstr(0, &path) < 0 || argint(1, (int*)&uargv) < 0){
+     return -1;
+   }
++  cprintf("exec will load %s with arguments:", path);
+   memset(argv, 0, sizeof(argv));
+   for(i=0;; i++){
+     if(i >= NELEM(argv))
+@@ -415,7 +435,9 @@ sys_exec(void)
+     }
+     if(fetchstr(uarg, &argv[i]) < 0)
+       return -1;
++    cprintf(" %s\n", argv[i]);
+   }
++
+   return exec(path, argv);
+ }
+ 
+@@ -428,6 +450,7 @@ sys_pipe(void)
+ 
+   if(argptr(0, (void*)&fd, 2*sizeof(fd[0])) < 0)
+     return -1;
++  cprintf("pipe read end here: %p, write end here: %p\n", fd, fd + 1);
+   if(pipealloc(&rf, &wf) < 0)
+     return -1;
+   fd0 = -1;
+diff --git a/sysproc.c b/sysproc.c
+index 0686d29..8eaaf2c 100644
+--- a/sysproc.c
++++ b/sysproc.c
+@@ -33,6 +33,7 @@ sys_kill(void)
+ 
+   if(argint(0, &pid) < 0)
+     return -1;
++  cprintf("kill pid: %d\n", pid);
+   return kill(pid);
+ }
+ 
+@@ -50,6 +51,7 @@ sys_sbrk(void)
+ 
+   if(argint(0, &n) < 0)
+     return -1;
++  cprintf("sbrk increments data size by %d bytes\n",n);
+   addr = myproc()->sz;
+   if(growproc(n) < 0)
+     return -1;
+@@ -64,6 +66,7 @@ sys_sleep(void)
+ 
+   if(argint(0, &n) < 0)
+     return -1;
++  cprintf("sleep %d secs\n", n);
+   acquire(&tickslock);
+   ticks0 = ticks;
+   while(ticks - ticks0 < n){
+@@ -89,3 +92,22 @@ sys_uptime(void)
+   release(&tickslock);
+   return xticks;
+ }
++
++int
++sys_date(void)
++{
++  // placeholder
++    char *date;
++    if (argptr(0, &date, sizeof(struct rtcdate)) < 0)
++    {
++        return -1;
++    }
++    cprintf("syscall date got called with rtc struct on address %p\n", date);
++    struct rtcdate *rtc = (struct rtcdate *)date;
++    // fill in rtcdate
++    cmostime(rtc);
++    cprintf("UTC time:\n");
++    cprintf("date->year %d, date->month: %d, date->day: %d\n", rtc->year, rtc->month, rtc->day);
++    cprintf("date->hour %d, date->minute: %d, date->second: %d\n", rtc->hour, rtc->minute, rtc->second);
++    return 0;
++}
+diff --git a/trap.c b/trap.c
+index 41c66eb..b76cfae 100644
+--- a/trap.c
++++ b/trap.c
+@@ -39,7 +39,7 @@ trap(struct trapframe *tf)
+   if(tf->trapno == T_SYSCALL){
+     if(myproc()->killed)
+       exit();
+-    myproc()->tf = tf;
++    myproc()->tf = tf;  // store user process current state
+     syscall();
+     if(myproc()->killed)
+       exit();
+diff --git a/user.h b/user.h
+index 4f99c52..3e791dd 100644
+--- a/user.h
++++ b/user.h
+@@ -23,6 +23,7 @@ int getpid(void);
+ char* sbrk(int);
+ int sleep(int);
+ int uptime(void);
++int date(struct rtcdate*);
+ 
+ // ulib.c
+ int stat(const char*, struct stat*);
+diff --git a/usys.S b/usys.S
+index 8bfd8a1..ba76d54 100644
+--- a/usys.S
++++ b/usys.S
+@@ -29,3 +29,4 @@ SYSCALL(getpid)
+ SYSCALL(sbrk)
+ SYSCALL(sleep)
+ SYSCALL(uptime)
++SYSCALL(date)
+-- 
+2.24.3 (Apple Git-128)
+
