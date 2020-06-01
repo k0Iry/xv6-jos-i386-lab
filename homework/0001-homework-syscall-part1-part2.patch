@@ -1,4 +1,4 @@
-From c115006916824d2034ddc2f5ebdac45f422b6bf5 Mon Sep 17 00:00:00 2001
+From d32fc8e42e3b95d2725cd551d30f8d6e7f787a20 Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Thu, 28 May 2020 18:15:31 +0200
 Subject: [PATCH] homework syscall part1 & part2 and challenge
@@ -8,14 +8,15 @@ https://pdos.csail.mit.edu/6.828/2018/homework/xv6-syscall.html
  Makefile  |  3 ++-
  date.c    | 19 +++++++++++++++++++
  proc.c    | 11 ++++++-----
- syscall.c | 43 +++++++++++++++++++++++++++++++++++++++++++
+ sh.c      |  4 ++--
+ syscall.c | 45 +++++++++++++++++++++++++++++++++++++++++++++
  syscall.h |  2 ++
  sysfile.c | 46 +++++++++++++++++++++++++++++++++++++++++++++-
  sysproc.c | 21 +++++++++++++++++++++
  trap.c    |  2 +-
  user.h    |  2 ++
  usys.S    |  3 +++
- 10 files changed, 144 insertions(+), 8 deletions(-)
+ 11 files changed, 148 insertions(+), 10 deletions(-)
  create mode 100644 date.c
 
 diff --git a/Makefile b/Makefile
@@ -109,23 +110,46 @@ index 806b1b1..4fb202e 100644
    static int first = 1;
    // Still holding ptable.lock from scheduler.
    release(&ptable.lock);
+diff --git a/sh.c b/sh.c
+index 054bab9..f56d895 100644
+--- a/sh.c
++++ b/sh.c
+@@ -103,14 +103,14 @@ runcmd(struct cmd *cmd)
+       panic("pipe");
+     if(fork1() == 0){
+       close(1);
+-      dup(p[1]);
++      dup2(p[1], 1);
+       close(p[0]);
+       close(p[1]);
+       runcmd(pcmd->left);
+     }
+     if(fork1() == 0){
+       close(0);
+-      dup(p[0]);
++      dup2(p[0], 0);
+       close(p[0]);
+       close(p[1]);
+       runcmd(pcmd->right);
 diff --git a/syscall.c b/syscall.c
-index ee85261..16de506 100644
+index ee85261..85b7765 100644
 --- a/syscall.c
 +++ b/syscall.c
-@@ -103,6 +103,7 @@ extern int sys_unlink(void);
+@@ -103,6 +103,8 @@ extern int sys_unlink(void);
  extern int sys_wait(void);
  extern int sys_write(void);
  extern int sys_uptime(void);
 +extern int sys_date(void);
++extern int sys_dup2(void);
  
  static int (*syscalls[])(void) = {
  [SYS_fork]    sys_fork,
-@@ -126,6 +127,34 @@ static int (*syscalls[])(void) = {
+@@ -126,6 +128,35 @@ static int (*syscalls[])(void) = {
  [SYS_link]    sys_link,
  [SYS_mkdir]   sys_mkdir,
  [SYS_close]   sys_close,
 +[SYS_date]    sys_date,
++[SYS_dup2]    sys_dup2,
 +};
 +
 +// use a string table for the name, any better idea?
@@ -156,7 +180,7 @@ index ee85261..16de506 100644
  };
  
  void
-@@ -136,7 +165,21 @@ syscall(void)
+@@ -136,7 +167,21 @@ syscall(void)
  
    num = curproc->tf->eax;
    if(num > 0 && num < NELEM(syscalls) && syscalls[num]) {
