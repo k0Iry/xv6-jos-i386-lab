@@ -1,0 +1,93 @@
+From 216188a5dbf834c86ebb41063fcb706d3c10f86e Mon Sep 17 00:00:00 2001
+From: Aaron <kljsandjb@me.com>
+Date: Sun, 7 Jun 2020 18:15:43 +0200
+Subject: [PATCH] lab2 PTE_PS challenge
+
+---
+ kern/entry.S      |  5 +++++
+ kern/entrypgdir.c | 12 ++++++++----
+ kern/kernel.ld    |  2 +-
+ kern/pmap.c       |  2 ++
+ 4 files changed, 16 insertions(+), 5 deletions(-)
+
+diff --git a/kern/entry.S b/kern/entry.S
+index 9550bbb..55e4848 100644
+--- a/kern/entry.S
++++ b/kern/entry.S
+@@ -52,6 +52,11 @@ entry:
+ 	# sufficient until we set up our real page table in mem_init
+ 	# in lab 2.
+ 
++    # enable Page size extensions bit to support superpages
++    # then we set PTE_PS bit in page directory entries
++	movl    %cr4, %eax
++	orl     $(CR4_PSE), %eax  # enable superpages (4MB)
++	movl    %eax, %cr4
+ 	# Load the physical address of entry_pgdir into cr3.  entry_pgdir
+ 	# is defined in entrypgdir.c.
+ 	movl	$(RELOC(entry_pgdir)), %eax
+diff --git a/kern/entrypgdir.c b/kern/entrypgdir.c
+index 4f324d1..6aa2fdb 100644
+--- a/kern/entrypgdir.c
++++ b/kern/entrypgdir.c
+@@ -21,15 +21,19 @@ __attribute__((__aligned__(PGSIZE)))
+ pde_t entry_pgdir[NPDENTRIES] = {
+ 	// Map VA's [0, 4MB) to PA's [0, 4MB)
+ 	[0]
+-		= ((uintptr_t)entry_pgtable - KERNBASE) + PTE_P,
++		= (0) | PTE_P | PTE_PS, //((uintptr_t)entry_pgtable - KERNBASE) + PTE_P,
+ 	// Map VA's [KERNBASE, KERNBASE+4MB) to PA's [0, 4MB)
+ 	[KERNBASE>>PDXSHIFT]
+-		= ((uintptr_t)entry_pgtable - KERNBASE) + PTE_P + PTE_W
++		= (0) | PTE_P | PTE_W | PTE_PS //((uintptr_t)entry_pgtable - KERNBASE) + PTE_P + PTE_W
+ };
+ 
++// Below 4KB allocation for page table page is not needed anymore
++// because we enabled superpages, so processor can directly address
++// 4MB physical address span
++//
+ // Entry 0 of the page table maps to physical page 0, entry 1 to
+ // physical page 1, etc.
+-__attribute__((__aligned__(PGSIZE)))
++/* __attribute__((__aligned__(PGSIZE)))
+ pte_t entry_pgtable[NPTENTRIES] = {
+ 	0x000000 | PTE_P | PTE_W,
+ 	0x001000 | PTE_P | PTE_W,
+@@ -1055,5 +1059,5 @@ pte_t entry_pgtable[NPTENTRIES] = {
+ 	0x3fd000 | PTE_P | PTE_W,
+ 	0x3fe000 | PTE_P | PTE_W,
+ 	0x3ff000 | PTE_P | PTE_W,
+-};
++};*/
+ 
+diff --git a/kern/kernel.ld b/kern/kernel.ld
+index a219d1d..b5d69e6 100644
+--- a/kern/kernel.ld
++++ b/kern/kernel.ld
+@@ -50,9 +50,9 @@ SECTIONS
+ 	.bss : {
+ 		PROVIDE(edata = .);
+ 		*(.bss)
+-		PROVIDE(end = .);
+ 		BYTE(0)
+ 	}
++	PROVIDE(end = .);
+ 
+ 
+ 	/DISCARD/ : {
+diff --git a/kern/pmap.c b/kern/pmap.c
+index 49dbd5d..dfe1471 100644
+--- a/kern/pmap.c
++++ b/kern/pmap.c
+@@ -118,6 +118,8 @@ boot_alloc(uint32_t n)
+ 	result = nextfree;
+ 	nextfree += ROUNDUP(n, PGSIZE);
+ 	cprintf("nextfree now is %p\n", nextfree);
++	cprintf("result is %p\n", result);
++	cprintf("kern_pgdir is here: %p\n", &kern_pgdir);
+ 
+ 
+ 	return result;
+-- 
+2.24.3 (Apple Git-128)
+
