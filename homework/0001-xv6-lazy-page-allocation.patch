@@ -1,0 +1,213 @@
+From f78621564b1942c1033a77d9f6870e3f1657cd7b Mon Sep 17 00:00:00 2001
+From: Aaron <kljsandjb@me.com>
+Date: Wed, 10 Jun 2020 18:33:28 +0200
+Subject: [PATCH] xv6 lazy page allocation
+
+---
+ defs.h     |  2 +-
+ exec.c     |  7 +++++--
+ proc.c     | 36 ++++++++++++++++++------------------
+ sbrktest.c |  9 ++++++++-
+ sysproc.c  | 15 +++++++++++----
+ trap.c     | 22 ++++++++++++++++++++++
+ vm.c       |  2 +-
+ 7 files changed, 66 insertions(+), 27 deletions(-)
+
+diff --git a/defs.h b/defs.h
+index 82fb982..8237829 100644
+--- a/defs.h
++++ b/defs.h
+@@ -106,7 +106,7 @@ int             pipewrite(struct pipe*, char*, int);
+ int             cpuid(void);
+ void            exit(void);
+ int             fork(void);
+-int             growproc(int);
++// int             growproc(int);
+ int             kill(int);
+ struct cpu*     mycpu(void);
+ struct proc*    myproc();
+diff --git a/exec.c b/exec.c
+index 0833f06..d8d6738 100644
+--- a/exec.c
++++ b/exec.c
+@@ -47,7 +47,7 @@ exec(char *path, char **argv)
+       continue;
+     if(ph.memsz < ph.filesz)
+       goto bad;
+-    if(ph.vaddr + ph.memsz < ph.vaddr)
++    if(ph.vaddr + ph.memsz < ph.vaddr)  // check overflow to avoid attack, loaduvm will otherwise load code in kernel space
+       goto bad;
+     if((sz = allocuvm(pgdir, sz, ph.vaddr + ph.memsz)) == 0)
+       goto bad;
+@@ -65,7 +65,7 @@ exec(char *path, char **argv)
+   sz = PGROUNDUP(sz);
+   if((sz = allocuvm(pgdir, sz, sz + 2*PGSIZE)) == 0)
+     goto bad;
+-  clearpteu(pgdir, (char*)(sz - 2*PGSIZE));
++  clearpteu(pgdir, (char*)(sz - 2*PGSIZE)); // guarding a user stack with an unmapped page
+   sp = sz;
+ 
+   // Push argument strings, prepare rest of stack in ustack.
+@@ -105,6 +105,9 @@ exec(char *path, char **argv)
+       last = s+1;
+   safestrcpy(curproc->name, last, sizeof(curproc->name));
+ 
++  // A process’s most important pieces of kernel state are its page table, its kernel stack, and its run state
++  // below we change the page table, its kernel stack, leaving run state as the same
++
+   // Commit to the user image.
+   oldpgdir = curproc->pgdir;
+   curproc->pgdir = pgdir;
+diff --git a/proc.c b/proc.c
+index 4fb202e..f0eada5 100644
+--- a/proc.c
++++ b/proc.c
+@@ -155,24 +155,24 @@ userinit(void)
+ 
+ // Grow current process's memory by n bytes.
+ // Return 0 on success, -1 on failure.
+-int
+-growproc(int n)
+-{
+-  uint sz;
+-  struct proc *curproc = myproc();
+-
+-  sz = curproc->sz;
+-  if(n > 0){
+-    if((sz = allocuvm(curproc->pgdir, sz, sz + n)) == 0)
+-      return -1;
+-  } else if(n < 0){
+-    if((sz = deallocuvm(curproc->pgdir, sz, sz + n)) == 0)
+-      return -1;
+-  }
+-  curproc->sz = sz;
+-  switchuvm(curproc);
+-  return 0;
+-}
++// int
++// growproc(int n)
++// {
++//   uint sz;
++//   struct proc *curproc = myproc();
++
++//   sz = curproc->sz;
++//   if(n > 0){
++//     if((sz = allocuvm(curproc->pgdir, sz, sz + n)) == 0)
++//       return -1;
++//   } else if(n < 0){
++//     if((sz = deallocuvm(curproc->pgdir, sz, sz + n)) == 0)
++//       return -1;
++//   }
++//   curproc->sz = sz;
++//   switchuvm(curproc);
++//   return 0;
++// }
+ 
+ // Create a new process copying p as the parent.
+ // Sets up stack to return as if from system call.
+diff --git a/sbrktest.c b/sbrktest.c
+index d8c7186..e44fe65 100644
+--- a/sbrktest.c
++++ b/sbrktest.c
+@@ -34,11 +34,18 @@
+ 
+ int main(int argc, char *argv[])
+ {
+-	if (sbrk(1) == (char *)-1)
++	char *addr = sbrk(1);
++	if (addr == (char *)-1)
+ 	{
+ 		printf(2, "sbrk failed\n");
+ 		exit();
+ 	}
++	*addr = 'a'; // write above stack (heap) to generate a page fault and self-correction
++
++	// write just 1 byte will trigger the page fault, cause one physical page got mapped, so next time, we access
++	// within one page like: (addr + 1), (addr + 2), ... , (addr + 4095), we kind of got a cache-hit
++
++	// *(addr + 4096) = 'b'; //this should cause a kernel panic, because we did not increase process size that much
+ 
+ 	printf(1, "sbrk success\n");
+ 
+diff --git a/sysproc.c b/sysproc.c
+index 2a38eb9..e192bb6 100644
+--- a/sysproc.c
++++ b/sysproc.c
+@@ -51,10 +51,17 @@ sys_sbrk(void)
+ 
+   if(argint(0, &n) < 0)
+     return -1;
+-  cprintf("sbrk increments data size by %d bytes\n",n);
+-  addr = myproc()->sz;
+-  if(growproc(n) < 0)
+-    return -1;
++  struct proc *curproc = myproc();
++  addr = curproc->sz;
++  cprintf("sbrk increments data size from 0x%x to 0x%x\n", addr, addr + n);
++
++  if (n < 0)
++  {
++    // shrink process address space
++    deallocuvm(curproc->pgdir, addr, addr + n);
++  }
++  curproc->sz = addr + n;
++  
+   return addr;
+ }
+ 
+diff --git a/trap.c b/trap.c
+index b76cfae..5d41ddb 100644
+--- a/trap.c
++++ b/trap.c
+@@ -13,6 +13,7 @@ struct gatedesc idt[256];
+ extern uint vectors[];  // in vectors.S: array of 256 entry pointers
+ struct spinlock tickslock;
+ uint ticks;
++extern int mappages(pde_t *pgdir, void *va, uint size, uint pa, int perm);
+ 
+ void
+ tvinit(void)
+@@ -77,6 +78,27 @@ trap(struct trapframe *tf)
+             cpuid(), tf->cs, tf->eip);
+     lapiceoi();
+     break;
++  case T_PGFLT:
++  {
++    // cprintf("process size: 0x%x\n", myproc()->sz);
++    if (rcr2() >= myproc()->sz)
++    {
++        // we don't allocate new memory for exceeding process size
++        // if we implement malloc then I guess we do not need this condition anymore?
++        cprintf("Invalid address 0x%x, will be panicked.\n", rcr2());
++        panic("Invalid address!\n");
++    }
++    // find which page contains page fault virtual address with PGROUNDDOWN
++    char *new_mem = kalloc();
++    if (new_mem == 0)
++    {
++        panic("Out of memory\n");
++    }
++    cprintf("page fault at address 0x%x, will be corrected.\n", rcr2());
++    // lazy map to the allocated physical memory page with user R/W
++    mappages(myproc()->pgdir, (void *)PGROUNDDOWN(rcr2()), PGSIZE, V2P(new_mem), PTE_W | PTE_U);
++    break;
++  }
+ 
+   //PAGEBREAK: 13
+   default:
+diff --git a/vm.c b/vm.c
+index 7ca8f7a..b44c373 100644
+--- a/vm.c
++++ b/vm.c
+@@ -57,7 +57,7 @@ walkpgdir(pde_t *pgdir, const void *va, int alloc)
+ // Create PTEs for virtual addresses starting at va that refer to
+ // physical addresses starting at pa. va and size might not
+ // be page-aligned.
+-static int
++int
+ mappages(pde_t *pgdir, void *va, uint size, uint pa, int perm)
+ {
+   char *a, *last;
+-- 
+2.24.3 (Apple Git-128)
+
