@@ -1,4 +1,4 @@
-From f78621564b1942c1033a77d9f6870e3f1657cd7b Mon Sep 17 00:00:00 2001
+From ad6a62d0971ef24367a16f7784b4ff715f78a0bc Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Wed, 10 Jun 2020 18:33:28 +0200
 Subject: [PATCH] xv6 lazy page allocation
@@ -9,9 +9,9 @@ Subject: [PATCH] xv6 lazy page allocation
  proc.c     | 36 ++++++++++++++++++------------------
  sbrktest.c |  9 ++++++++-
  sysproc.c  | 15 +++++++++++----
- trap.c     | 22 ++++++++++++++++++++++
- vm.c       |  2 +-
- 7 files changed, 66 insertions(+), 27 deletions(-)
+ trap.c     | 31 +++++++++++++++++++++++++++++++
+ vm.c       | 13 ++++++++++++-
+ 7 files changed, 86 insertions(+), 27 deletions(-)
 
 diff --git a/defs.h b/defs.h
 index 82fb982..8237829 100644
@@ -156,24 +156,24 @@ index 2a38eb9..e192bb6 100644
  }
  
 diff --git a/trap.c b/trap.c
-index b76cfae..5d41ddb 100644
+index b76cfae..352f0b0 100644
 --- a/trap.c
 +++ b/trap.c
-@@ -13,6 +13,7 @@ struct gatedesc idt[256];
+@@ -13,6 +13,8 @@ struct gatedesc idt[256];
  extern uint vectors[];  // in vectors.S: array of 256 entry pointers
  struct spinlock tickslock;
  uint ticks;
 +extern int mappages(pde_t *pgdir, void *va, uint size, uint pa, int perm);
++extern int hitguardpage(pte_t *pgdir, char *uva);
  
  void
  tvinit(void)
-@@ -77,6 +78,27 @@ trap(struct trapframe *tf)
+@@ -77,6 +79,35 @@ trap(struct trapframe *tf)
              cpuid(), tf->cs, tf->eip);
      lapiceoi();
      break;
 +  case T_PGFLT:
 +  {
-+    // cprintf("process size: 0x%x\n", myproc()->sz);
 +    if (rcr2() >= myproc()->sz)
 +    {
 +        // we don't allocate new memory for exceeding process size
@@ -181,12 +181,21 @@ index b76cfae..5d41ddb 100644
 +        cprintf("Invalid address 0x%x, will be panicked.\n", rcr2());
 +        panic("Invalid address!\n");
 +    }
++    // what if we use system call write to the guard page,
++    // which we should not write to? we can check if PTE_U is enabled
++    // we do not allocate memory for this area
++    if (hitguardpage(myproc()->pgdir, (char *)rcr2()))
++    {
++      panic("hitguardpage\n");
++    }
++
 +    // find which page contains page fault virtual address with PGROUNDDOWN
 +    char *new_mem = kalloc();
 +    if (new_mem == 0)
 +    {
 +        panic("Out of memory\n");
 +    }
++    memset(new_mem, 0, PGSIZE);
 +    cprintf("page fault at address 0x%x, will be corrected.\n", rcr2());
 +    // lazy map to the allocated physical memory page with user R/W
 +    mappages(myproc()->pgdir, (void *)PGROUNDDOWN(rcr2()), PGSIZE, V2P(new_mem), PTE_W | PTE_U);
@@ -196,7 +205,7 @@ index b76cfae..5d41ddb 100644
    //PAGEBREAK: 13
    default:
 diff --git a/vm.c b/vm.c
-index 7ca8f7a..b44c373 100644
+index 7ca8f7a..d27e5c6 100644
 --- a/vm.c
 +++ b/vm.c
 @@ -57,7 +57,7 @@ walkpgdir(pde_t *pgdir, const void *va, int alloc)
@@ -208,6 +217,24 @@ index 7ca8f7a..b44c373 100644
  mappages(pde_t *pgdir, void *va, uint size, uint pa, int perm)
  {
    char *a, *last;
+@@ -310,6 +310,17 @@ clearpteu(pde_t *pgdir, char *uva)
+   *pte &= ~PTE_U;
+ }
+ 
++int hitguardpage(pte_t *pgdir, char *uva)
++{
++  pte_t *pte;
++
++  pte = walkpgdir(pgdir, uva, 0);
++  if (pte == 0)
++    panic("hitguardpage");
++
++  return (*pte & PTE_U);
++}
++
+ // Given a parent process's page table, create a copy
+ // of it for a child.
+ pde_t*
 -- 
 2.24.3 (Apple Git-128)
 
