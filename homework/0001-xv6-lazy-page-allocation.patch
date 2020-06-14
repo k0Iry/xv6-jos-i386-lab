@@ -233,7 +233,7 @@ index 7ca8f7a..7af7339 100644
 +    panic("hitguardpage");
 +  cprintf("hitguardpage on phy address: 0x%x\n", PTE_ADDR(*pte));
 +  if (*pte)
-+    return ((*pte & PTE_U) != 0);
++    return ((*pte & PTE_U) == 0);
 +
 +  return 0;
 +}
