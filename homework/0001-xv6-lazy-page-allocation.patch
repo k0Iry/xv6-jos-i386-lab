@@ -1,4 +1,4 @@
-From ad6a62d0971ef24367a16f7784b4ff715f78a0bc Mon Sep 17 00:00:00 2001
+From 7a2e7bb27632ed8741ac70fb2bedb5d0d8fe5448 Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Wed, 10 Jun 2020 18:33:28 +0200
 Subject: [PATCH] xv6 lazy page allocation
@@ -7,11 +7,11 @@ Subject: [PATCH] xv6 lazy page allocation
  defs.h     |  2 +-
  exec.c     |  7 +++++--
  proc.c     | 36 ++++++++++++++++++------------------
- sbrktest.c |  9 ++++++++-
+ sbrktest.c | 12 +++++++++++-
  sysproc.c  | 15 +++++++++++----
  trap.c     | 31 +++++++++++++++++++++++++++++++
- vm.c       | 13 ++++++++++++-
- 7 files changed, 86 insertions(+), 27 deletions(-)
+ vm.c       | 16 +++++++++++++++-
+ 7 files changed, 92 insertions(+), 27 deletions(-)
 
 diff --git a/defs.h b/defs.h
 index 82fb982..8237829 100644
@@ -106,10 +106,10 @@ index 4fb202e..f0eada5 100644
  // Create a new process copying p as the parent.
  // Sets up stack to return as if from system call.
 diff --git a/sbrktest.c b/sbrktest.c
-index d8c7186..e44fe65 100644
+index d8c7186..bd969ff 100644
 --- a/sbrktest.c
 +++ b/sbrktest.c
-@@ -34,11 +34,18 @@
+@@ -34,11 +34,21 @@
  
  int main(int argc, char *argv[])
  {
@@ -121,6 +121,9 @@ index d8c7186..e44fe65 100644
  		exit();
  	}
 +	*addr = 'a'; // write above stack (heap) to generate a page fault and self-correction
++	// when use lazy allocation, the mapping changes above would become:
++	// 1. before *addr = 'a', [00002-00002]  PTE[002]     ---DA--UWP 0dee5
++	// 2. after *addr = 'a', [00002-00003]  PTE[002-003] ---DA--UWP 0dee5 0dfbc (new page has been allocated on the fly)
 +
 +	// write just 1 byte will trigger the page fault, cause one physical page got mapped, so next time, we access
 +	// within one page like: (addr + 1), (addr + 2), ... , (addr + 4095), we kind of got a cache-hit
@@ -205,7 +208,7 @@ index b76cfae..352f0b0 100644
    //PAGEBREAK: 13
    default:
 diff --git a/vm.c b/vm.c
-index 7ca8f7a..d27e5c6 100644
+index 7ca8f7a..7af7339 100644
 --- a/vm.c
 +++ b/vm.c
 @@ -57,7 +57,7 @@ walkpgdir(pde_t *pgdir, const void *va, int alloc)
@@ -217,7 +220,7 @@ index 7ca8f7a..d27e5c6 100644
  mappages(pde_t *pgdir, void *va, uint size, uint pa, int perm)
  {
    char *a, *last;
-@@ -310,6 +310,17 @@ clearpteu(pde_t *pgdir, char *uva)
+@@ -310,6 +310,20 @@ clearpteu(pde_t *pgdir, char *uva)
    *pte &= ~PTE_U;
  }
  
@@ -228,8 +231,11 @@ index 7ca8f7a..d27e5c6 100644
 +  pte = walkpgdir(pgdir, uva, 0);
 +  if (pte == 0)
 +    panic("hitguardpage");
++  cprintf("hitguardpage on phy address: 0x%x\n", PTE_ADDR(*pte));
++  if (*pte)
++    return ((*pte & PTE_U) != 0);
 +
-+  return (*pte & PTE_U);
++  return 0;
 +}
 +
  // Given a parent process's page table, create a copy
