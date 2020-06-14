@@ -1,6 +1,7 @@
 # xv6-jos-i386-lab
 part of my lab implementation of xv6 2018 course of MIT
 
+JOS:
 lab2 grade:
 irytu@Irys-MBP ~/D/6/lab (lab2)> cat ../../grade-lab2.txt
 /Applications/Xcode.app/Contents/Developer/usr/bin/make clean
@@ -29,3 +30,8 @@ running JOS: (1.2s)
   Kernel page directory: OK
   Page management 2: OK
 Score: 70/70
+
+
+XV6:
+
+see homework folder
