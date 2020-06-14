@@ -1,4 +1,4 @@
-From 7a2e7bb27632ed8741ac70fb2bedb5d0d8fe5448 Mon Sep 17 00:00:00 2001
+From 125b07fb254041e18dd4242b6f94ae637bce3d29 Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Wed, 10 Jun 2020 18:33:28 +0200
 Subject: [PATCH] xv6 lazy page allocation
@@ -10,8 +10,8 @@ Subject: [PATCH] xv6 lazy page allocation
  sbrktest.c | 12 +++++++++++-
  sysproc.c  | 15 +++++++++++----
  trap.c     | 31 +++++++++++++++++++++++++++++++
- vm.c       | 16 +++++++++++++++-
- 7 files changed, 92 insertions(+), 27 deletions(-)
+ vm.c       | 18 +++++++++++++++++-
+ 7 files changed, 94 insertions(+), 27 deletions(-)
 
 diff --git a/defs.h b/defs.h
 index 82fb982..8237829 100644
@@ -208,7 +208,7 @@ index b76cfae..352f0b0 100644
    //PAGEBREAK: 13
    default:
 diff --git a/vm.c b/vm.c
-index 7ca8f7a..7af7339 100644
+index 7ca8f7a..110c434 100644
 --- a/vm.c
 +++ b/vm.c
 @@ -57,7 +57,7 @@ walkpgdir(pde_t *pgdir, const void *va, int alloc)
@@ -220,7 +220,7 @@ index 7ca8f7a..7af7339 100644
  mappages(pde_t *pgdir, void *va, uint size, uint pa, int perm)
  {
    char *a, *last;
-@@ -310,6 +310,20 @@ clearpteu(pde_t *pgdir, char *uva)
+@@ -310,6 +310,22 @@ clearpteu(pde_t *pgdir, char *uva)
    *pte &= ~PTE_U;
  }
  
@@ -231,10 +231,12 @@ index 7ca8f7a..7af7339 100644
 +  pte = walkpgdir(pgdir, uva, 0);
 +  if (pte == 0)
 +    panic("hitguardpage");
-+  cprintf("hitguardpage on phy address: 0x%x\n", PTE_ADDR(*pte));
 +  if (*pte)
++  {
++    cprintf("hitguardpage on phy address: 0x%x\n", PTE_ADDR(*pte));
 +    return ((*pte & PTE_U) == 0);
-+
++  }
++    
 +  return 0;
 +}
 +
