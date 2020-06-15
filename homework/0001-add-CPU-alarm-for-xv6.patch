@@ -1,0 +1,245 @@
+From 19c8ce52382a5eb1dc5b63f9340f76a3a0500388 Mon Sep 17 00:00:00 2001
+From: Aaron <kljsandjb@me.com>
+Date: Mon, 15 Jun 2020 18:26:01 +0200
+Subject: [PATCH] add CPU alarm for xv6
+
+implemented CPU alarm for each process for xv6
+also disabled write syscall's print for better
+console output.
+
+The CPU alarm needs us to insert signal handler's
+address into the user stack, and then drop into
+trapret to go back the user space, so that:
+1. signal handler got called
+2. afer signal handler returned, immediately pick
+where user program being interrupted and continue
+---
+ Makefile    |  1 +
+ alarmtest.c | 18 ++++++++++++++++++
+ proc.c      |  3 +++
+ proc.h      |  3 +++
+ syscall.c   | 10 +++++++---
+ syscall.h   |  1 +
+ sysfile.c   |  4 ++--
+ sysproc.c   | 14 ++++++++++++++
+ trap.c      | 22 ++++++++++++++++++++++
+ user.h      |  1 +
+ usys.S      |  1 +
+ 11 files changed, 73 insertions(+), 5 deletions(-)
+ create mode 100644 alarmtest.c
+
+diff --git a/Makefile b/Makefile
+index 60cef2d..f026203 100644
+--- a/Makefile
++++ b/Makefile
+@@ -183,6 +183,7 @@ UPROGS=\
+ 	_zombie\
+ 	_date\
+ 	_sbrktest\
++	_alarmtest\
+ 
+ fs.img: mkfs README $(UPROGS)
+ 	./mkfs fs.img README $(UPROGS)
+diff --git a/alarmtest.c b/alarmtest.c
+new file mode 100644
+index 0000000..4968c3f
+--- /dev/null
++++ b/alarmtest.c
+@@ -0,0 +1,18 @@
++#include "types.h"
++#include "stat.h"
++#include "user.h"
++
++void periodic();
++
++int main(int argc, char *argv[]) {
++  int i;
++  printf(1, "alarmtest starting\n");
++  alarm(10, periodic);
++  for (i = 0; i < 25 * 5000000; i++) {
++    if ((i % 250000) == 0)
++      write(2, ".", 1);
++  }
++  exit();
++}
++
++void periodic() { printf(1, "alarm!\n"); }
+\ No newline at end of file
+diff --git a/proc.c b/proc.c
+index 3ac1eb2..54f2d9d 100644
+--- a/proc.c
++++ b/proc.c
+@@ -99,6 +99,9 @@ found:
+   p->context = (struct context *)sp;
+   memset(p->context, 0, sizeof *p->context);
+   p->context->eip = (uint)forkret;
++  p->alarmhandler = 0;
++  p->alarmticks = 0;
++  p->ticksleft = 0;
+ 
+   return p;
+ }
+diff --git a/proc.h b/proc.h
+index 62a0ed0..654230b 100644
+--- a/proc.h
++++ b/proc.h
+@@ -49,6 +49,9 @@ struct proc {
+   struct file *ofile[NOFILE]; // Open files
+   struct inode *cwd;          // Current directory
+   char name[16];              // Process name (debugging)
++  uint alarmticks;            // the interval per process alarm action
++  uint ticksleft;             // ticks left for another action, range: [0, alarmticks]
++  void (*alarmhandler)();     // the alarm handler
+ };
+ 
+ // Process memory is laid out contiguously, low addresses first:
+diff --git a/syscall.c b/syscall.c
+index 453f9ae..f9d43c0 100644
+--- a/syscall.c
++++ b/syscall.c
+@@ -95,7 +95,9 @@ extern int sys_write(void);
+ extern int sys_uptime(void);
+ extern int sys_date(void);
+ extern int sys_dup2(void);
++extern int sys_alarm(void);
+ 
++// we register syscall interfaces here
+ static int (*syscalls[])(void) = {
+     [SYS_fork] sys_fork,   [SYS_exit] sys_exit,     [SYS_wait] sys_wait,
+     [SYS_pipe] sys_pipe,   [SYS_read] sys_read,     [SYS_kill] sys_kill,
+@@ -104,10 +106,11 @@ static int (*syscalls[])(void) = {
+     [SYS_sleep] sys_sleep, [SYS_uptime] sys_uptime, [SYS_open] sys_open,
+     [SYS_write] sys_write, [SYS_mknod] sys_mknod,   [SYS_unlink] sys_unlink,
+     [SYS_link] sys_link,   [SYS_mkdir] sys_mkdir,   [SYS_close] sys_close,
+-    [SYS_date] sys_date,   [SYS_dup2] sys_dup2,
++    [SYS_date] sys_date,   [SYS_dup2] sys_dup2,     [SYS_alarm] sys_alarm,
+ };
+ 
+ // use a string table for the name, any better idea?
++// use STAB to get the name from debug information, will do it later
+ static char *syscallnames[] = {
+     [SYS_fork] "fork",   [SYS_exit] "exit",     [SYS_wait] "wait",
+     [SYS_pipe] "pipe",   [SYS_read] "read",     [SYS_kill] "kill",
+@@ -116,7 +119,7 @@ static char *syscallnames[] = {
+     [SYS_sleep] "sleep", [SYS_uptime] "uptime", [SYS_open] "open",
+     [SYS_write] "write", [SYS_mknod] "mknod",   [SYS_unlink] "unlink",
+     [SYS_link] "link",   [SYS_mkdir] "mkdir",   [SYS_close] "close",
+-    [SYS_date] "date",   [SYS_dup2] "dup2",
++    [SYS_date] "date",   [SYS_dup2] "dup2",     [SYS_alarm] "alarm",
+ };
+ 
+ void syscall(void) {
+@@ -139,7 +142,8 @@ void syscall(void) {
+     //   cprintf("first argument: %s\n", argument);
+ 
+     curproc->tf->eax = syscalls[num]();
+-    cprintf("%s -> %d\n\n", syscallnames[num], curproc->tf->eax);
++    if (num != 16)
++      cprintf("%s -> %d\n\n", syscallnames[num], curproc->tf->eax);
+   } else {
+     cprintf("%d %s: unknown sys call %d\n", curproc->pid, curproc->name, num);
+     curproc->tf->eax = -1;
+diff --git a/syscall.h b/syscall.h
+index edb15c1..f1bcf02 100644
+--- a/syscall.h
++++ b/syscall.h
+@@ -22,3 +22,4 @@
+ #define SYS_close 21
+ #define SYS_date 22
+ #define SYS_dup2 23
++#define SYS_alarm 24
+\ No newline at end of file
+diff --git a/sysfile.c b/sysfile.c
+index cabeadb..5db20fc 100644
+--- a/sysfile.c
++++ b/sysfile.c
+@@ -100,8 +100,8 @@ int sys_write(void) {
+ 
+   if (argfd(0, 0, &f) < 0 || argint(2, &n) < 0 || argptr(1, &p, n) < 0)
+     return -1;
+-  cprintf("write to file object %p, file buffer address: %p, size %d\n", f, p,
+-          n);
++  // cprintf("write to file object %p, file buffer address: %p, size %d\n", f, p,
++          // n);
+   return filewrite(f, p, n);
+ }
+ 
+diff --git a/sysproc.c b/sysproc.c
+index 1820a7a..20ca9f5 100644
+--- a/sysproc.c
++++ b/sysproc.c
+@@ -91,3 +91,17 @@ int sys_date(void) {
+           rtc->minute, rtc->second);
+   return 0;
+ }
++
++int sys_alarm(void) {
++  int ticks;
++  void (*handler)();
++
++  if (argint(0, &ticks) < 0)
++    return -1;
++  if (argptr(1, (char **)&handler, 1) < 0)
++    return -1;
++  myproc()->alarmticks = ticks;
++  myproc()->alarmhandler = handler;
++  myproc()->ticksleft = ticks;
++  return 0;
++}
+diff --git a/trap.c b/trap.c
+index 26af406..5166809 100644
+--- a/trap.c
++++ b/trap.c
+@@ -49,6 +49,28 @@ void trap(struct trapframe *tf) {
+       release(&tickslock);
+     }
+     lapiceoi();
++    if (myproc() != 0 && (tf->cs & 0x3) == 0x3) // come from user space, cs is 3
++    {
++      if (myproc()->ticksleft > 0)
++      {
++        --(myproc()->ticksleft);
++      }
++      else
++      {
++        // reset
++        myproc()->ticksleft = myproc()->alarmticks;
++        // the handler must be run in user space.
++
++        // when handler returns, it should be returned to
++        // the point user program being interrupted
++        if (myproc()->alarmhandler != 0)
++        {
++          tf->esp -= 4; // allocate more user stack to hold stuff
++          *((uint *)tf->esp) = tf->eip;  // save old eip
++          tf->eip = (uint)myproc()->alarmhandler; // replace with handler's address
++        }
++      }
++    }
+     break;
+   case T_IRQ0 + IRQ_IDE:
+     ideintr();
+diff --git a/user.h b/user.h
+index aa406ed..859f982 100644
+--- a/user.h
++++ b/user.h
+@@ -25,6 +25,7 @@ char *sbrk(int);
+ int sleep(int);
+ int uptime(void);
+ int date(struct rtcdate *);
++int alarm(uint, void (*)());
+ 
+ // ulib.c
+ int stat(const char *, struct stat *);
+diff --git a/usys.S b/usys.S
+index 07f432d..14f284b 100644
+--- a/usys.S
++++ b/usys.S
+@@ -32,3 +32,4 @@ SYSCALL(sleep)
+ SYSCALL(uptime)
+ SYSCALL(date)
+ SYSCALL(dup2)
++SYSCALL(alarm)
+-- 
+2.24.3 (Apple Git-128)
+
