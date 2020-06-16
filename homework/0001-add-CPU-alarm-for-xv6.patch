@@ -1,4 +1,4 @@
-From 19c8ce52382a5eb1dc5b63f9340f76a3a0500388 Mon Sep 17 00:00:00 2001
+From 1583fd96753f0304665d5d384bd876fa315d28d2 Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Mon, 15 Jun 2020 18:26:01 +0200
 Subject: [PATCH] add CPU alarm for xv6
@@ -22,10 +22,10 @@ where user program being interrupted and continue
  syscall.h   |  1 +
  sysfile.c   |  4 ++--
  sysproc.c   | 14 ++++++++++++++
- trap.c      | 22 ++++++++++++++++++++++
+ trap.c      | 40 ++++++++++++++++++++++++++++++++++++++++
  user.h      |  1 +
  usys.S      |  1 +
- 11 files changed, 73 insertions(+), 5 deletions(-)
+ 11 files changed, 91 insertions(+), 5 deletions(-)
  create mode 100644 alarmtest.c
 
 diff --git a/Makefile b/Makefile
@@ -187,10 +187,10 @@ index 1820a7a..20ca9f5 100644
 +  return 0;
 +}
 diff --git a/trap.c b/trap.c
-index 26af406..5166809 100644
+index 26af406..222da91 100644
 --- a/trap.c
 +++ b/trap.c
-@@ -49,6 +49,28 @@ void trap(struct trapframe *tf) {
+@@ -49,6 +49,46 @@ void trap(struct trapframe *tf) {
        release(&tickslock);
      }
      lapiceoi();
@@ -202,17 +202,35 @@ index 26af406..5166809 100644
 +      }
 +      else
 +      {
-+        // reset
-+        myproc()->ticksleft = myproc()->alarmticks;
 +        // the handler must be run in user space.
++
++        // save caller-saved user registers: %eax, %ecx, %edx
++        // when handler got called, it might change these registers during the procedure
++        // so after the handler, we need to restore those registers from somewhere (the stack)
++        // |------------|
++        // | old  eip   |
++        // |------------|
++        // |retore regs |
++        // |------------| <- esp
 +
 +        // when handler returns, it should be returned to
 +        // the point user program being interrupted
 +        if (myproc()->alarmhandler != 0)
 +        {
-+          tf->esp -= 4; // allocate more user stack to hold stuff
-+          *((uint *)tf->esp) = tf->eip;  // save old eip
++          // reset
++          myproc()->ticksleft = myproc()->alarmticks;
++
++          tf->esp -= 4;
++          *((uint *)tf->esp) = tf->eip;  // save %eip
 +          tf->eip = (uint)myproc()->alarmhandler; // replace with handler's address
++
++          // save and restore caller-saved registers: %eax, %ecx, %edx
++          // tf->esp -= 4;
++          // *((uint *)tf->esp) = tf->eax;  // save %eax
++          // tf->esp -= 4;
++          // *((uint *)tf->esp) = 0xc35800;
++          // tf->esp -= 4;
++          // *((uint *)tf->esp) = tf->esp + 4;
 +        }
 +      }
 +    }
