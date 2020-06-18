@@ -1,0 +1,69 @@
+From bdd779fa7905ca2c3656b11d62a766f7b2cbac16 Mon Sep 17 00:00:00 2001
+From: Aaron <kljsandjb@me.com>
+Date: Thu, 18 Jun 2020 18:47:15 +0200
+Subject: [PATCH] lab3 user env
+
+ongoing...
+---
+ kern/env.c  | 15 ++++++++++++++-
+ kern/pmap.c |  4 ++++
+ 2 files changed, 18 insertions(+), 1 deletion(-)
+
+diff --git a/kern/env.c b/kern/env.c
+index db2fda9..2f009db 100644
+--- a/kern/env.c
++++ b/kern/env.c
+@@ -116,6 +116,12 @@ env_init(void)
+ {
+ 	// Set up envs array
+ 	// LAB 3: Your code here.
++	for (int i = NENV - 1; i >= 0; i--)
++	{
++		envs[i].env_id = 0;
++		envs[i].env_link = env_free_list;
++		env_free_list = envs + i;
++	}
+ 
+ 	// Per-CPU part of the initialization
+ 	env_init_percpu();
+@@ -179,7 +185,14 @@ env_setup_vm(struct Env *e)
+ 	//    - The functions in kern/pmap.h are handy.
+ 
+ 	// LAB 3: Your code here.
+-
++	p->pp_ref++;
++	e->env_pgdir = (pte_t *)page2kva(p);
++	// we can copy kern part of PDEs from kern_pgdir
++	// no need to allocate more physical memory and map again
++	for (int start = PDX(UTOP); start < 1024; start ++)
++	{
++		e->env_pgdir[start] = kern_pgdir[start];
++	}
+ 	// UVPT maps the env's own page table read-only.
+ 	// Permissions: kernel R, user R
+ 	e->env_pgdir[PDX(UVPT)] = PADDR(e->env_pgdir) | PTE_P | PTE_U;
+diff --git a/kern/pmap.c b/kern/pmap.c
+index 9b6334f..d58f72f 100644
+--- a/kern/pmap.c
++++ b/kern/pmap.c
+@@ -176,6 +176,9 @@ mem_init(void)
+ 	//////////////////////////////////////////////////////////////////////
+ 	// Make 'envs' point to an array of size 'NENV' of 'struct Env'.
+ 	// LAB 3: Your code here.
++	envs = (struct Env *) boot_alloc(NENV * sizeof(struct Env));
++	memset(envs, 0, NENV * sizeof(struct Env));
++	cprintf("envs are located starting from 0x%08x\n", PADDR(envs));
+ 
+ 	//////////////////////////////////////////////////////////////////////
+ 	// Now that we've allocated the initial kernel data structures, we set
+@@ -208,6 +211,7 @@ mem_init(void)
+ 	//    - the new image at UENVS  -- kernel R, user R
+ 	//    - envs itself -- kernel RW, user NONE
+ 	// LAB 3: Your code here.
++	boot_map_region(kern_pgdir, UENVS, ROUNDUP(NENV * sizeof(struct Env), PGSIZE), PADDR(envs), PTE_U | PTE_W);
+ 
+ 	//////////////////////////////////////////////////////////////////////
+ 	// Use the physical memory that 'bootstack' refers to as the kernel
+-- 
+2.24.3 (Apple Git-128)
+
