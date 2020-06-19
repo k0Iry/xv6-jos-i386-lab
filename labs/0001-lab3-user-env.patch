@@ -1,16 +1,23 @@
-From bdd779fa7905ca2c3656b11d62a766f7b2cbac16 Mon Sep 17 00:00:00 2001
+From d58e732466aa514057cb0ef6aaeeacf13ef635be Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Thu, 18 Jun 2020 18:47:15 +0200
 Subject: [PATCH] lab3 user env
 
-ongoing...
+now we can hit SIGTRAP because the
+hardware cannot handle switch from user to kernel space
+
+fix showmappings function so it will skip unmapped pages
+and continue print available mappings
+
+will fix later, we now stop at 'int $0x30'
 ---
- kern/env.c  | 15 ++++++++++++++-
- kern/pmap.c |  4 ++++
- 2 files changed, 18 insertions(+), 1 deletion(-)
+ kern/env.c     | 73 +++++++++++++++++++++++++++++++++++++++++++++++---
+ kern/monitor.c | 10 +++----
+ kern/pmap.c    |  4 +++
+ 3 files changed, 79 insertions(+), 8 deletions(-)
 
 diff --git a/kern/env.c b/kern/env.c
-index db2fda9..2f009db 100644
+index db2fda9..3a121d6 100644
 --- a/kern/env.c
 +++ b/kern/env.c
 @@ -116,6 +116,12 @@ env_init(void)
@@ -26,7 +33,7 @@ index db2fda9..2f009db 100644
  
  	// Per-CPU part of the initialization
  	env_init_percpu();
-@@ -179,7 +185,14 @@ env_setup_vm(struct Env *e)
+@@ -179,9 +185,18 @@ env_setup_vm(struct Env *e)
  	//    - The functions in kern/pmap.h are handy.
  
  	// LAB 3: Your code here.
@@ -41,7 +48,125 @@ index db2fda9..2f009db 100644
 +	}
  	// UVPT maps the env's own page table read-only.
  	// Permissions: kernel R, user R
++	// need to update, if we keep the copy from kern_pgdir,
++	// it will point to kern_pgdir itself, not env_pgdir
  	e->env_pgdir[PDX(UVPT)] = PADDR(e->env_pgdir) | PTE_P | PTE_U;
+ 
+ 	return 0;
+@@ -267,6 +282,19 @@ region_alloc(struct Env *e, void *va, size_t len)
+ 	//   'va' and 'len' values that are not page-aligned.
+ 	//   You should round va down, and round (va + len) up.
+ 	//   (Watch out for corner-cases!)
++
++	// page that contains va & va + len
++	uint32_t start = (uint32_t)ROUNDDOWN(va, PGSIZE);
++	uint32_t end = (uint32_t)ROUNDUP(va + len, PGSIZE);
++
++	for (uint32_t va = start; va < end; va += PGSIZE)
++	{
++		pte_t *pgtbl = pgdir_walk(e->env_pgdir, (const void *)va, 1);
++		struct PageInfo *pg_info = page_alloc(0);
++		if (pg_info == NULL)
++			panic("page_alloc: %e", -E_NO_MEM);
++		*pgtbl = page2pa(pg_info) | PTE_P | PTE_U | PTE_W;
++	}
+ }
+ 
+ //
+@@ -323,11 +351,34 @@ load_icode(struct Env *e, uint8_t *binary)
+ 	//  What?  (See env_run() and env_pop_tf() below.)
+ 
+ 	// LAB 3: Your code here.
+-
++	struct Elf *elf_header = (struct Elf *)binary;
++	if (elf_header->e_magic != ELF_MAGIC)
++		panic("invalid elf file");
++
++	struct Proghdr *ph, *eph;
++	ph = (struct Proghdr *)((uint8_t *)elf_header + elf_header->e_phoff);
++	eph = ph + elf_header->e_phnum;
++
++	for (; ph < eph; ph++)
++	{
++		if (ph->p_type == ELF_PROG_LOAD && ph->p_filesz <= ph->p_memsz)
++		{
++			region_alloc(e, (void *)ph->p_va, ph->p_memsz);
++			lcr3(PADDR(e->env_pgdir));
++			memmove((void *)ph->p_va, (void*)(binary + ph->p_offset), ph->p_filesz);
++			lcr3(PADDR(kern_pgdir));
++		}
++	}
++	e->env_tf.tf_eip = elf_header->e_entry;
+ 	// Now map one page for the program's initial stack
+ 	// at virtual address USTACKTOP - PGSIZE.
+ 
+ 	// LAB 3: Your code here.
++	struct PageInfo *stack_page = page_alloc(ALLOC_ZERO);
++	if (page_insert(e->env_pgdir, stack_page, (void *)(USTACKTOP - PGSIZE), PTE_U | PTE_W) != 0)
++	{
++		panic("alloc user stack");
++	}
+ }
+ 
+ //
+@@ -341,6 +392,11 @@ void
+ env_create(uint8_t *binary, enum EnvType type)
+ {
+ 	// LAB 3: Your code here.
++	struct Env *new_env;
++	if (env_alloc(&new_env, 0) != 0)
++		panic("env_alloc");
++	load_icode(new_env, binary);
++	new_env->env_type = type;
+ }
+ 
+ //
+@@ -457,7 +513,18 @@ env_run(struct Env *e)
+ 	//	e->env_tf to sensible values.
+ 
+ 	// LAB 3: Your code here.
++	if (curenv != NULL && curenv != e)
++	{
++		if (curenv->env_status == ENV_RUNNING)
++			curenv->env_status = ENV_RUNNABLE;
++	}
++	curenv = e;
++	curenv->env_status = ENV_RUNNING;
++	curenv->env_runs ++;
++
++	lcr3(PADDR(curenv->env_pgdir));
++	env_pop_tf(&(curenv->env_tf));
+ 
+-	panic("env_run not yet implemented");
++	// panic("env_run not yet implemented");
+ }
+ 
+diff --git a/kern/monitor.c b/kern/monitor.c
+index 4959e59..0829208 100644
+--- a/kern/monitor.c
++++ b/kern/monitor.c
+@@ -109,16 +109,16 @@ int mon_showmappings(int argc, char **argv, struct Trapframe *tf)
+ 
+ 	size_t range = (high_addr - low_addr) / PGSIZE;
+ 
+-	for (int i = 0; i <= range; i++)
++	for (int i = 0; i < range; i++)
+ 	{
+ 		pte_t *pgtbl_entry = NULL;
+ 		const void *vir_addr = (const void *)(low_addr + i * PGSIZE);
+-		if (!(pgtbl_entry = pgdir_walk(entry_pgdir, vir_addr, 0)))
++		if (!(pgtbl_entry = pgdir_walk(entry_pgdir, vir_addr, 0)) || !(*pgtbl_entry & PTE_P))
+ 		{
+-			if (!(pgtbl_entry = pgdir_walk(kern_pgdir, vir_addr, 0)))
++			if (!(pgtbl_entry = pgdir_walk(kern_pgdir, vir_addr, 0)) || !(*pgtbl_entry & PTE_P))
+ 			{
+-				cprintf("Invalid mappings, perhaps accessing USER level, not supported yet\n");
+-				return 1;
++				cprintf("Invalid mappings at 0x%08x, perhaps accessing USER level, not supported yet\n", vir_addr);
++				continue;
+ 			}
+ 		}
+ 		cprintf("\tVirtual address 0x%08x mapped to physical address 0x%08x\n", vir_addr, PTE_ADDR(*pgtbl_entry) + PGOFF(vir_addr));
 diff --git a/kern/pmap.c b/kern/pmap.c
 index 9b6334f..d58f72f 100644
 --- a/kern/pmap.c
