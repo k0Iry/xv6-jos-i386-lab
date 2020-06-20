@@ -1,4 +1,4 @@
-From d58e732466aa514057cb0ef6aaeeacf13ef635be Mon Sep 17 00:00:00 2001
+From fa95f6e8bbf6456e3aeb214f2afce7c2768b12cf Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Thu, 18 Jun 2020 18:47:15 +0200
 Subject: [PATCH] lab3 user env
@@ -9,12 +9,14 @@ hardware cannot handle switch from user to kernel space
 fix showmappings function so it will skip unmapped pages
 and continue print available mappings
 
-will fix later, we now stop at 'int $0x30'
+passed divzero, softint, and badsegment tests
 ---
- kern/env.c     | 73 +++++++++++++++++++++++++++++++++++++++++++++++---
- kern/monitor.c | 10 +++----
- kern/pmap.c    |  4 +++
- 3 files changed, 79 insertions(+), 8 deletions(-)
+ kern/env.c       | 73 ++++++++++++++++++++++++++++++++++++++++++++++--
+ kern/monitor.c   | 10 +++----
+ kern/pmap.c      |  4 +++
+ kern/trap.c      | 62 ++++++++++++++++++++++++++++++++++++++++
+ kern/trapentry.S | 39 +++++++++++++++++++++++++-
+ 5 files changed, 179 insertions(+), 9 deletions(-)
 
 diff --git a/kern/env.c b/kern/env.c
 index db2fda9..3a121d6 100644
@@ -189,6 +191,139 @@ index 9b6334f..d58f72f 100644
  
  	//////////////////////////////////////////////////////////////////////
  	// Use the physical memory that 'bootstack' refers to as the kernel
+diff --git a/kern/trap.c b/kern/trap.c
+index e27b556..e256d27 100644
+--- a/kern/trap.c
++++ b/kern/trap.c
+@@ -25,6 +25,58 @@ struct Pseudodesc idt_pd = {
+ 	sizeof(idt) - 1, (uint32_t) idt
+ };
+ 
++typedef void (*trap_handler)(void);
++
++void divide();
++void debug();
++void nmi();
++void brkpt();
++void oflow();
++void bound();
++void illop();
++void device();
++void dblflt();
++void corproc();
++void tss();
++void segnp();
++void stack();
++void gpflt();
++void pgflt();
++void res();
++void fperr();
++void align();
++void mchk();
++void simderr();
++void do_nothing(){}
++
++static trap_handler get_trap_handler(int trapno)
++{
++	static const trap_handler funcs[256] = {
++		divide,
++		debug,
++		nmi,
++		brkpt,
++		oflow,
++		bound,
++		illop,
++		device,
++		dblflt,
++		corproc,
++		tss,
++		segnp,
++		stack,
++		gpflt,
++		pgflt,
++		res,
++		fperr,
++		align,
++		mchk,
++		simderr,
++		[32 ... 255] = do_nothing
++	};
++
++	return funcs[trapno];
++}
+ 
+ static const char *trapname(int trapno)
+ {
+@@ -65,6 +117,16 @@ trap_init(void)
+ 	extern struct Segdesc gdt[];
+ 
+ 	// LAB 3: Your code here.
++	int i = 0;
++	for (; i < 32; i++)
++	{
++		// 0-31 for TRAPs
++		SETGATE(idt[i], 1, GD_KT, get_trap_handler(i), 0);
++	}
++	for (; i < 256; i++)
++	{
++		// 32 - 255 for IRQs
++	}
+ 
+ 	// Per-CPU setup 
+ 	trap_init_percpu();
+diff --git a/kern/trapentry.S b/kern/trapentry.S
+index 22fc640..719cad5 100644
+--- a/kern/trapentry.S
++++ b/kern/trapentry.S
+@@ -46,10 +46,47 @@
+ /*
+  * Lab 3: Your code here for generating entry points for the different traps.
+  */
+-
++TRAPHANDLER_NOEC(divide, T_DIVIDE)
++TRAPHANDLER(debug, T_DEBUG)
++TRAPHANDLER(nmi, T_NMI)
++TRAPHANDLER(brkpt, T_BRKPT)
++TRAPHANDLER(oflow, T_OFLOW)
++TRAPHANDLER(bound, T_BOUND)
++TRAPHANDLER(illop, T_ILLOP)
++TRAPHANDLER(device, T_DEVICE)
++TRAPHANDLER(dblflt, T_DBLFLT)
++TRAPHANDLER(corproc, 9)
++TRAPHANDLER(tss, T_TSS)
++TRAPHANDLER(segnp, T_SEGNP)
++TRAPHANDLER(stack, T_STACK)
++TRAPHANDLER(gpflt, T_GPFLT)
++TRAPHANDLER(pgflt, T_PGFLT)
++TRAPHANDLER(res,  15)
++TRAPHANDLER(fperr, T_FPERR)
++TRAPHANDLER(align, T_ALIGN)
++TRAPHANDLER(mchk, T_MCHK)
++TRAPHANDLER(simderr, T_SIMDERR)
+ 
+ 
+ /*
+  * Lab 3: Your code here for _alltraps
+  */
++.globl _alltraps;
++_alltraps:
++# push all rest registers on stack
++pushl %ds
++pushl %es
++pushal
++
++# Set up data segments.
++movw $(GD_KD), %ax
++movw %ax, %ds
++movw %ax, %es
++
++# Call trap(tf), where tf=%esp
++pushl %esp
++call trap
++
++# trap needs return back to user space
++# pop registers and return from interrupt (iret)
+ 
 -- 
 2.24.3 (Apple Git-128)
 
