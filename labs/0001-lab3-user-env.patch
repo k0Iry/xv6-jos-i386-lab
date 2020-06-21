@@ -1,4 +1,4 @@
-From fa95f6e8bbf6456e3aeb214f2afce7c2768b12cf Mon Sep 17 00:00:00 2001
+From 0b908b8e0bd4314ded92f2c4a1e0188b22376d4a Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Thu, 18 Jun 2020 18:47:15 +0200
 Subject: [PATCH] lab3 user env
@@ -9,14 +9,14 @@ hardware cannot handle switch from user to kernel space
 fix showmappings function so it will skip unmapped pages
 and continue print available mappings
 
-passed divzero, softint, and badsegment tests
+passed divzero, softint, badsegment & breakpoint tests
 ---
- kern/env.c       | 73 ++++++++++++++++++++++++++++++++++++++++++++++--
+ kern/env.c       | 73 +++++++++++++++++++++++++++++++++++++++++++++--
  kern/monitor.c   | 10 +++----
  kern/pmap.c      |  4 +++
- kern/trap.c      | 62 ++++++++++++++++++++++++++++++++++++++++
- kern/trapentry.S | 39 +++++++++++++++++++++++++-
- 5 files changed, 179 insertions(+), 9 deletions(-)
+ kern/trap.c      | 74 ++++++++++++++++++++++++++++++++++++++++++++++++
+ kern/trapentry.S | 39 ++++++++++++++++++++++++-
+ 5 files changed, 191 insertions(+), 9 deletions(-)
 
 diff --git a/kern/env.c b/kern/env.c
 index db2fda9..3a121d6 100644
@@ -192,7 +192,7 @@ index 9b6334f..d58f72f 100644
  	//////////////////////////////////////////////////////////////////////
  	// Use the physical memory that 'bootstack' refers to as the kernel
 diff --git a/kern/trap.c b/kern/trap.c
-index e27b556..e256d27 100644
+index e27b556..f09eb48 100644
 --- a/kern/trap.c
 +++ b/kern/trap.c
 @@ -25,6 +25,58 @@ struct Pseudodesc idt_pd = {
@@ -204,7 +204,7 @@ index e27b556..e256d27 100644
 +void divide();
 +void debug();
 +void nmi();
-+void brkpt();
++void brkpt();	// needs user level privilege
 +void oflow();
 +void bound();
 +void illop();
@@ -215,7 +215,7 @@ index e27b556..e256d27 100644
 +void segnp();
 +void stack();
 +void gpflt();
-+void pgflt();
++void pgflt();	// needs kernel level privilege
 +void res();
 +void fperr();
 +void align();
@@ -254,53 +254,72 @@ index e27b556..e256d27 100644
  
  static const char *trapname(int trapno)
  {
-@@ -65,6 +117,16 @@ trap_init(void)
+@@ -65,6 +117,22 @@ trap_init(void)
  	extern struct Segdesc gdt[];
  
  	// LAB 3: Your code here.
-+	int i = 0;
-+	for (; i < 32; i++)
++	int vector = 0;
++	for (; vector < 32; vector++)
 +	{
 +		// 0-31 for TRAPs
-+		SETGATE(idt[i], 1, GD_KT, get_trap_handler(i), 0);
++		if (vector == T_BRKPT)
++		{
++			SETGATE(idt[vector], 1, GD_KT, get_trap_handler(vector), gdt[GD_UT >> 3].sd_dpl);
++			continue;
++		}
++		SETGATE(idt[vector], 1, GD_KT, get_trap_handler(vector), gdt[GD_KT >> 3].sd_dpl);
 +	}
-+	for (; i < 256; i++)
++	for (; vector < 256; vector++)
 +	{
-+		// 32 - 255 for IRQs
++		// 32 - 255 for IRQs (user defined)
++		SETGATE(idt[vector], 0, GD_KT, get_trap_handler(vector), gdt[GD_UT >> 3].sd_dpl);
 +	}
  
  	// Per-CPU setup 
  	trap_init_percpu();
+@@ -144,6 +212,12 @@ trap_dispatch(struct Trapframe *tf)
+ {
+ 	// Handle processor exceptions.
+ 	// LAB 3: Your code here.
++	if (tf->tf_trapno == T_PGFLT)
++		page_fault_handler(tf);
++	if (tf->tf_trapno == T_BRKPT)
++	{
++		monitor(tf);
++	}
+ 
+ 	// Unexpected trap: The user process or the kernel has a bug.
+ 	print_trapframe(tf);
 diff --git a/kern/trapentry.S b/kern/trapentry.S
-index 22fc640..719cad5 100644
+index 22fc640..79aa12b 100644
 --- a/kern/trapentry.S
 +++ b/kern/trapentry.S
 @@ -46,10 +46,47 @@
  /*
   * Lab 3: Your code here for generating entry points for the different traps.
   */
--
 +TRAPHANDLER_NOEC(divide, T_DIVIDE)
-+TRAPHANDLER(debug, T_DEBUG)
-+TRAPHANDLER(nmi, T_NMI)
-+TRAPHANDLER(brkpt, T_BRKPT)
-+TRAPHANDLER(oflow, T_OFLOW)
-+TRAPHANDLER(bound, T_BOUND)
-+TRAPHANDLER(illop, T_ILLOP)
-+TRAPHANDLER(device, T_DEVICE)
++TRAPHANDLER_NOEC(debug, T_DEBUG)
++TRAPHANDLER_NOEC(nmi, T_NMI)
++TRAPHANDLER_NOEC(brkpt, T_BRKPT)
++TRAPHANDLER_NOEC(oflow, T_OFLOW)
++TRAPHANDLER_NOEC(bound, T_BOUND)
++TRAPHANDLER_NOEC(illop, T_ILLOP)
++TRAPHANDLER_NOEC(device, T_DEVICE)
++TRAPHANDLER_NOEC(corproc, 9)
++TRAPHANDLER_NOEC(fperr, T_FPERR)
++TRAPHANDLER_NOEC(mchk, T_MCHK)
++TRAPHANDLER_NOEC(simderr, T_SIMDERR)
+ 
+-
 +TRAPHANDLER(dblflt, T_DBLFLT)
-+TRAPHANDLER(corproc, 9)
 +TRAPHANDLER(tss, T_TSS)
 +TRAPHANDLER(segnp, T_SEGNP)
 +TRAPHANDLER(stack, T_STACK)
 +TRAPHANDLER(gpflt, T_GPFLT)
 +TRAPHANDLER(pgflt, T_PGFLT)
 +TRAPHANDLER(res,  15)
-+TRAPHANDLER(fperr, T_FPERR)
 +TRAPHANDLER(align, T_ALIGN)
-+TRAPHANDLER(mchk, T_MCHK)
-+TRAPHANDLER(simderr, T_SIMDERR)
- 
  
  /*
   * Lab 3: Your code here for _alltraps
