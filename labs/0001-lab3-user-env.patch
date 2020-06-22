@@ -1,4 +1,4 @@
-From 0b908b8e0bd4314ded92f2c4a1e0188b22376d4a Mon Sep 17 00:00:00 2001
+From be6e2ea33ead3e3506b575ea3268a3224905a101 Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Thu, 18 Jun 2020 18:47:15 +0200
 Subject: [PATCH] lab3 user env
@@ -11,12 +11,13 @@ and continue print available mappings
 
 passed divzero, softint, badsegment & breakpoint tests
 ---
- kern/env.c       | 73 +++++++++++++++++++++++++++++++++++++++++++++--
- kern/monitor.c   | 10 +++----
+ kern/env.c       | 73 +++++++++++++++++++++++++++++++++++++++++--
+ kern/monitor.c   | 43 ++++++++++++++++++++++----
+ kern/monitor.h   |  1 +
  kern/pmap.c      |  4 +++
- kern/trap.c      | 74 ++++++++++++++++++++++++++++++++++++++++++++++++
- kern/trapentry.S | 39 ++++++++++++++++++++++++-
- 5 files changed, 191 insertions(+), 9 deletions(-)
+ kern/trap.c      | 80 ++++++++++++++++++++++++++++++++++++++++++++++++
+ kern/trapentry.S | 39 ++++++++++++++++++++++-
+ 6 files changed, 230 insertions(+), 10 deletions(-)
 
 diff --git a/kern/env.c b/kern/env.c
 index db2fda9..3a121d6 100644
@@ -144,10 +145,20 @@ index db2fda9..3a121d6 100644
  }
  
 diff --git a/kern/monitor.c b/kern/monitor.c
-index 4959e59..0829208 100644
+index 4959e59..ea89908 100644
 --- a/kern/monitor.c
 +++ b/kern/monitor.c
-@@ -109,16 +109,16 @@ int mon_showmappings(int argc, char **argv, struct Trapframe *tf)
+@@ -27,7 +27,8 @@ static struct Command commands[] = {
+ 	{ "help", "Display this list of commands", mon_help },
+ 	{ "kerninfo", "Display information about the kernel", mon_kerninfo },
+ 	{ "backtrace", "Display backtrace to current function call", mon_backtrace},
+-	{ "showmappings", "Display memory mappings in current active address space", mon_showmappings}
++	{ "showmappings", "Display memory mappings in current active address space", mon_showmappings},
++	{ "debug", "Debug purpose", mon_debug}
+ };
+ 
+ /***** Implementations of basic kernel monitor commands *****/
+@@ -109,16 +110,16 @@ int mon_showmappings(int argc, char **argv, struct Trapframe *tf)
  
  	size_t range = (high_addr - low_addr) / PGSIZE;
  
@@ -169,6 +180,54 @@ index 4959e59..0829208 100644
  			}
  		}
  		cprintf("\tVirtual address 0x%08x mapped to physical address 0x%08x\n", vir_addr, PTE_ADDR(*pgtbl_entry) + PGOFF(vir_addr));
+@@ -127,6 +128,36 @@ int mon_showmappings(int argc, char **argv, struct Trapframe *tf)
+ 	return 0;
+ }
+ 
++int mon_debug(int argc, char **argv, struct Trapframe *tf)
++{
++	if (tf == NULL)
++	{
++		cprintf("No user process is running!\n");
++		return 0;
++	}
++
++	if (argc != 2)
++	{
++		cprintf("usage 'si' for single-step debug, 'continue' for continue till end...\n");
++		return 0;
++	}
++
++	extern void env_run(struct Env *e);
++	extern struct Env *curenv;
++	if (strncmp("si", argv[1], 10) == 0)
++	{
++		env_run(curenv);
++	}
++	if (strncmp("continue", argv[1], 10) == 0)
++	{
++		// clear TF flag to disable IRQ1
++		tf->tf_eflags &= ~0x100;
++		env_run(curenv);
++	}
++
++	return 0;
++}
++
+ /***** Kernel monitor command interpreter *****/
+ 
+ #define WHITESPACE "\t\r\n "
+diff --git a/kern/monitor.h b/kern/monitor.h
+index 35d2793..303cbdc 100644
+--- a/kern/monitor.h
++++ b/kern/monitor.h
+@@ -16,5 +16,6 @@ int mon_help(int argc, char **argv, struct Trapframe *tf);
+ int mon_kerninfo(int argc, char **argv, struct Trapframe *tf);
+ int mon_backtrace(int argc, char **argv, struct Trapframe *tf);
+ int mon_showmappings(int argc, char **argv, struct Trapframe *tf);
++int mon_debug(int argc, char **argv, struct Trapframe *tf);
+ 
+ #endif	// !JOS_KERN_MONITOR_H
 diff --git a/kern/pmap.c b/kern/pmap.c
 index 9b6334f..d58f72f 100644
 --- a/kern/pmap.c
@@ -192,7 +251,7 @@ index 9b6334f..d58f72f 100644
  	//////////////////////////////////////////////////////////////////////
  	// Use the physical memory that 'bootstack' refers to as the kernel
 diff --git a/kern/trap.c b/kern/trap.c
-index e27b556..f09eb48 100644
+index e27b556..1c0af1e 100644
 --- a/kern/trap.c
 +++ b/kern/trap.c
 @@ -25,6 +25,58 @@ struct Pseudodesc idt_pd = {
@@ -277,7 +336,7 @@ index e27b556..f09eb48 100644
  
  	// Per-CPU setup 
  	trap_init_percpu();
-@@ -144,6 +212,12 @@ trap_dispatch(struct Trapframe *tf)
+@@ -144,6 +212,18 @@ trap_dispatch(struct Trapframe *tf)
  {
  	// Handle processor exceptions.
  	// LAB 3: Your code here.
@@ -285,8 +344,14 @@ index e27b556..f09eb48 100644
 +		page_fault_handler(tf);
 +	if (tf->tf_trapno == T_BRKPT)
 +	{
++		// enable single-step mode for debugging,
++		// a debug exception will be generated
++		// after each instruction
++		tf->tf_eflags |= 0x100;
 +		monitor(tf);
 +	}
++	if (tf->tf_trapno == T_DEBUG)
++		monitor(tf);
  
  	// Unexpected trap: The user process or the kernel has a bug.
  	print_trapframe(tf);
