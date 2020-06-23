@@ -1,4 +1,4 @@
-From be6e2ea33ead3e3506b575ea3268a3224905a101 Mon Sep 17 00:00:00 2001
+From 7e8d5dfe7585533b5a1c8149a71724fa0f59176f Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Thu, 18 Jun 2020 18:47:15 +0200
 Subject: [PATCH] lab3 user env
@@ -11,16 +11,18 @@ and continue print available mappings
 
 passed divzero, softint, badsegment & breakpoint tests
 ---
- kern/env.c       | 73 +++++++++++++++++++++++++++++++++++++++++--
- kern/monitor.c   | 43 ++++++++++++++++++++++----
+ kern/env.c       | 75 ++++++++++++++++++++++++++++++++++++++--
+ kern/monitor.c   | 43 +++++++++++++++++++----
  kern/monitor.h   |  1 +
  kern/pmap.c      |  4 +++
- kern/trap.c      | 80 ++++++++++++++++++++++++++++++++++++++++++++++++
- kern/trapentry.S | 39 ++++++++++++++++++++++-
- 6 files changed, 230 insertions(+), 10 deletions(-)
+ kern/syscall.c   | 17 ++++++++-
+ kern/trap.c      | 89 ++++++++++++++++++++++++++++++++++++++++++++++++
+ kern/trapentry.S | 40 +++++++++++++++++++++-
+ user/testbss.c   |  2 +-
+ 8 files changed, 259 insertions(+), 12 deletions(-)
 
 diff --git a/kern/env.c b/kern/env.c
-index db2fda9..3a121d6 100644
+index db2fda9..08e9523 100644
 --- a/kern/env.c
 +++ b/kern/env.c
 @@ -116,6 +116,12 @@ env_init(void)
@@ -56,7 +58,7 @@ index db2fda9..3a121d6 100644
  	e->env_pgdir[PDX(UVPT)] = PADDR(e->env_pgdir) | PTE_P | PTE_U;
  
  	return 0;
-@@ -267,6 +282,19 @@ region_alloc(struct Env *e, void *va, size_t len)
+@@ -267,6 +282,21 @@ region_alloc(struct Env *e, void *va, size_t len)
  	//   'va' and 'len' values that are not page-aligned.
  	//   You should round va down, and round (va + len) up.
  	//   (Watch out for corner-cases!)
@@ -68,7 +70,9 @@ index db2fda9..3a121d6 100644
 +	for (uint32_t va = start; va < end; va += PGSIZE)
 +	{
 +		pte_t *pgtbl = pgdir_walk(e->env_pgdir, (const void *)va, 1);
-+		struct PageInfo *pg_info = page_alloc(0);
++		struct PageInfo *pg_info = NULL;
++		if (!(*pgtbl & PTE_P))	// for already-mapped page, we don't init it in any way
++			pg_info = page_alloc(ALLOC_ZERO);
 +		if (pg_info == NULL)
 +			panic("page_alloc: %e", -E_NO_MEM);
 +		*pgtbl = page2pa(pg_info) | PTE_P | PTE_U | PTE_W;
@@ -76,7 +80,7 @@ index db2fda9..3a121d6 100644
  }
  
  //
-@@ -323,11 +351,34 @@ load_icode(struct Env *e, uint8_t *binary)
+@@ -323,11 +353,34 @@ load_icode(struct Env *e, uint8_t *binary)
  	//  What?  (See env_run() and env_pop_tf() below.)
  
  	// LAB 3: Your code here.
@@ -112,7 +116,7 @@ index db2fda9..3a121d6 100644
  }
  
  //
-@@ -341,6 +392,11 @@ void
+@@ -341,6 +394,11 @@ void
  env_create(uint8_t *binary, enum EnvType type)
  {
  	// LAB 3: Your code here.
@@ -124,7 +128,7 @@ index db2fda9..3a121d6 100644
  }
  
  //
-@@ -457,7 +513,18 @@ env_run(struct Env *e)
+@@ -457,7 +515,18 @@ env_run(struct Env *e)
  	//	e->env_tf to sensible values.
  
  	// LAB 3: Your code here.
@@ -250,11 +254,48 @@ index 9b6334f..d58f72f 100644
  
  	//////////////////////////////////////////////////////////////////////
  	// Use the physical memory that 'bootstack' refers to as the kernel
+diff --git a/kern/syscall.c b/kern/syscall.c
+index 414d489..5d84b1d 100644
+--- a/kern/syscall.c
++++ b/kern/syscall.c
+@@ -21,6 +21,11 @@ sys_cputs(const char *s, size_t len)
+ 	// Destroy the environment if not.
+ 
+ 	// LAB 3: Your code here.
++	cprintf("Will write from address: 0x%08x to address: 0x%08x\n", s, s + len);
++	if ((uint32_t)ROUNDUP(s, PGSIZE) != USTACKTOP || (uint32_t)ROUNDUP(s + len, PGSIZE) != USTACKTOP)
++	{
++		env_destroy(curenv);
++	}
+ 
+ 	// Print the string supplied by the user.
+ 	cprintf("%.*s", len, s);
+@@ -70,9 +75,19 @@ syscall(uint32_t syscallno, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4,
+ 	// Return any appropriate return value.
+ 	// LAB 3: Your code here.
+ 
+-	panic("syscall not implemented");
++	// panic("syscall not implemented");
+ 
+ 	switch (syscallno) {
++	case SYS_cputs:
++		sys_cputs((const char *)a1, a2);
++		return 0;
++	case SYS_cgetc:
++		return sys_cgetc();
++	case SYS_getenvid:
++		return sys_getenvid();
++	case SYS_env_destroy:
++		return sys_env_destroy(a1);
++	case NSYSCALLS:
+ 	default:
+ 		return -E_INVAL;
+ 	}
 diff --git a/kern/trap.c b/kern/trap.c
-index e27b556..1c0af1e 100644
+index e27b556..212a7a1 100644
 --- a/kern/trap.c
 +++ b/kern/trap.c
-@@ -25,6 +25,58 @@ struct Pseudodesc idt_pd = {
+@@ -25,6 +25,61 @@ struct Pseudodesc idt_pd = {
  	sizeof(idt) - 1, (uint32_t) idt
  };
  
@@ -280,6 +321,7 @@ index e27b556..1c0af1e 100644
 +void align();
 +void mchk();
 +void simderr();
++void systemcall();
 +void do_nothing(){}
 +
 +static trap_handler get_trap_handler(int trapno)
@@ -305,7 +347,9 @@ index e27b556..1c0af1e 100644
 +		align,
 +		mchk,
 +		simderr,
-+		[32 ... 255] = do_nothing
++		[20 ... 47] = do_nothing,
++		[48] = systemcall,
++		[49 ... 255] = do_nothing
 +	};
 +
 +	return funcs[trapno];
@@ -313,7 +357,7 @@ index e27b556..1c0af1e 100644
  
  static const char *trapname(int trapno)
  {
-@@ -65,6 +117,22 @@ trap_init(void)
+@@ -65,6 +120,22 @@ trap_init(void)
  	extern struct Segdesc gdt[];
  
  	// LAB 3: Your code here.
@@ -336,7 +380,7 @@ index e27b556..1c0af1e 100644
  
  	// Per-CPU setup 
  	trap_init_percpu();
-@@ -144,6 +212,18 @@ trap_dispatch(struct Trapframe *tf)
+@@ -144,6 +215,24 @@ trap_dispatch(struct Trapframe *tf)
  {
  	// Handle processor exceptions.
  	// LAB 3: Your code here.
@@ -352,14 +396,20 @@ index e27b556..1c0af1e 100644
 +	}
 +	if (tf->tf_trapno == T_DEBUG)
 +		monitor(tf);
++	if (tf->tf_trapno == T_SYSCALL)
++	{
++		tf->tf_regs.reg_eax = syscall(tf->tf_regs.reg_eax, tf->tf_regs.reg_edx, tf->tf_regs.reg_ecx,
++				tf->tf_regs.reg_ebx, tf->tf_regs.reg_edi, tf->tf_regs.reg_esi);
++		return;
++	}
  
  	// Unexpected trap: The user process or the kernel has a bug.
  	print_trapframe(tf);
 diff --git a/kern/trapentry.S b/kern/trapentry.S
-index 22fc640..79aa12b 100644
+index 22fc640..8666b1c 100644
 --- a/kern/trapentry.S
 +++ b/kern/trapentry.S
-@@ -46,10 +46,47 @@
+@@ -46,10 +46,48 @@
  /*
   * Lab 3: Your code here for generating entry points for the different traps.
   */
@@ -385,6 +435,7 @@ index 22fc640..79aa12b 100644
 +TRAPHANDLER(pgflt, T_PGFLT)
 +TRAPHANDLER(res,  15)
 +TRAPHANDLER(align, T_ALIGN)
++TRAPHANDLER_NOEC(systemcall, T_SYSCALL)
  
  /*
   * Lab 3: Your code here for _alltraps
@@ -408,6 +459,19 @@ index 22fc640..79aa12b 100644
 +# trap needs return back to user space
 +# pop registers and return from interrupt (iret)
  
+diff --git a/user/testbss.c b/user/testbss.c
+index 2f8ee8e..b81e21f 100644
+--- a/user/testbss.c
++++ b/user/testbss.c
+@@ -14,7 +14,7 @@ umain(int argc, char **argv)
+ 	cprintf("Making sure bss works right...\n");
+ 	for (i = 0; i < ARRAYSIZE; i++)
+ 		if (bigarray[i] != 0)
+-			panic("bigarray[%d] isn't cleared!\n", i);
++			panic("bigarray[%d] isn't cleared! 0x%08x\n", i, bigarray + i);
+ 	for (i = 0; i < ARRAYSIZE; i++)
+ 		bigarray[i] = i;
+ 	for (i = 0; i < ARRAYSIZE; i++)
 -- 
 2.24.3 (Apple Git-128)
 
