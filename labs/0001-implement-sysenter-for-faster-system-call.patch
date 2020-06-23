@@ -1,0 +1,108 @@
+From 5491eb08e583d874c7e59ff28af3f9af5df09fa9 Mon Sep 17 00:00:00 2001
+From: Aaron <kljsandjb@me.com>
+Date: Tue, 23 Jun 2020 23:01:03 +0200
+Subject: [PATCH] implement sysenter for faster system call
+
+---
+ inc/x86.h        |  7 +++++++
+ kern/trap.c      |  5 +++++
+ kern/trapentry.S |  7 +++++++
+ lib/syscall.c    | 20 +++++++++++++++++++-
+ 4 files changed, 38 insertions(+), 1 deletion(-)
+
+diff --git a/inc/x86.h b/inc/x86.h
+index cc15ff4..0e679c5 100644
+--- a/inc/x86.h
++++ b/inc/x86.h
+@@ -248,6 +248,13 @@ read_tsc(void)
+ 	return tsc;
+ }
+ 
++static inline void
++wrmsr(uint32_t msr, uint32_t eax, uint32_t edx)
++{
++	asm volatile("wrmsr"
++		: :"c" (msr), "a" (eax), "d" (edx));
++}
++
+ static inline uint32_t
+ xchg(volatile uint32_t *addr, uint32_t newval)
+ {
+diff --git a/kern/trap.c b/kern/trap.c
+index 212a7a1..eebf672 100644
+--- a/kern/trap.c
++++ b/kern/trap.c
+@@ -49,6 +49,7 @@ void mchk();
+ void simderr();
+ void systemcall();
+ void do_nothing(){}
++void sysenter_handler();
+ 
+ static trap_handler get_trap_handler(int trapno)
+ {
+@@ -120,6 +121,10 @@ trap_init(void)
+ 	extern struct Segdesc gdt[];
+ 
+ 	// LAB 3: Your code here.
++	wrmsr(0x174, GD_KT, 0);		// set (CPL = 0) CS & SS
++	wrmsr(0x176, (uint32_t)sysenter_handler, 0);		// the sysenter handler address
++	wrmsr(0x175, KSTACKTOP, 0);	// the stack where we drop in when trapped into kernel
++
+ 	int vector = 0;
+ 	for (; vector < 32; vector++)
+ 	{
+diff --git a/kern/trapentry.S b/kern/trapentry.S
+index 8666b1c..a656f00 100644
+--- a/kern/trapentry.S
++++ b/kern/trapentry.S
+@@ -69,6 +69,13 @@ TRAPHANDLER(res,  15)
+ TRAPHANDLER(align, T_ALIGN)
+ TRAPHANDLER_NOEC(systemcall, T_SYSCALL)
+ 
++.globl sysenter_handler
++.type sysenter_handler, @function
++.align 2
++# bypass trap to reach syscall directly
++sysenter_handler:
++
++
+ /*
+  * Lab 3: Your code here for _alltraps
+  */
+diff --git a/lib/syscall.c b/lib/syscall.c
+index 8d28dda..c4be7f2 100644
+--- a/lib/syscall.c
++++ b/lib/syscall.c
+@@ -37,10 +37,28 @@ syscall(int num, int check, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4,
+ 	return ret;
+ }
+ 
++static inline void
++sysenter(int num, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4)
++{
++	// fast system call: pass system call number in AX,
++	// up to 4 parameters in DX, CX, BX, DI
++	//
++	// Interrupt kernel with MSR (CPL = 0).
++	//
++
++	asm volatile("sysenter"
++		     : : "a" (num),
++		        "d" (a1),
++		        "c" (a2),
++		        "b" (a3),
++		        "D" (a4)
++		     : "cc", "memory");
++}
++
+ void
+ sys_cputs(const char *s, size_t len)
+ {
+-	syscall(SYS_cputs, 0, (uint32_t)s, len, 0, 0, 0);
++	sysenter(SYS_cputs, (uint32_t)s, len, 0, 0);
+ }
+ 
+ int
+-- 
+2.24.3 (Apple Git-128)
+
