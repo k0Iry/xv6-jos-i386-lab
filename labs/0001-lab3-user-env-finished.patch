@@ -1,4 +1,4 @@
-From d22a38831689ded9589f3d0cf0a5a431abcb7ff4 Mon Sep 17 00:00:00 2001
+From 3937e6fb736492a7fe74474b4d8c6e35465d155b Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Thu, 18 Jun 2020 18:47:15 +0200
 Subject: [PATCH] lab3 user env finished
@@ -8,18 +8,18 @@ challenge finished:
 2. implement sysenter for faster system call
 ---
  inc/x86.h        |  7 ++++
- kern/env.c       | 75 +++++++++++++++++++++++++++++++++++--
+ kern/env.c       | 75 ++++++++++++++++++++++++++++++++++--
  kern/kdebug.c    |  6 +++
- kern/monitor.c   | 43 +++++++++++++++++++---
+ kern/monitor.c   | 43 ++++++++++++++++++---
  kern/monitor.h   |  1 +
- kern/pmap.c      | 21 +++++++++++
+ kern/pmap.c      | 21 ++++++++++
  kern/syscall.c   | 18 ++++++++-
- kern/trap.c      | 96 ++++++++++++++++++++++++++++++++++++++++++++++++
- kern/trapentry.S | 58 +++++++++++++++++++++++++++++
+ kern/trap.c      | 99 ++++++++++++++++++++++++++++++++++++++++++++++++
+ kern/trapentry.S | 58 ++++++++++++++++++++++++++++
  lib/libmain.c    |  3 +-
  lib/syscall.c    | 38 +++++++++++++++++--
  user/testbss.c   |  2 +-
- 12 files changed, 352 insertions(+), 16 deletions(-)
+ 12 files changed, 355 insertions(+), 16 deletions(-)
 
 diff --git a/inc/x86.h b/inc/x86.h
 index cc15ff4..0e679c5 100644
@@ -359,7 +359,7 @@ index 414d489..96486a1 100644
  		return -E_INVAL;
  	}
 diff --git a/kern/trap.c b/kern/trap.c
-index e27b556..9d1f70b 100644
+index e27b556..595666f 100644
 --- a/kern/trap.c
 +++ b/kern/trap.c
 @@ -25,6 +25,61 @@ struct Pseudodesc idt_pd = {
@@ -454,14 +454,12 @@ index e27b556..9d1f70b 100644
  
  	// Per-CPU setup 
  	trap_init_percpu();
-@@ -144,6 +220,26 @@ trap_dispatch(struct Trapframe *tf)
+@@ -144,6 +220,24 @@ trap_dispatch(struct Trapframe *tf)
  {
  	// Handle processor exceptions.
  	// LAB 3: Your code here.
-+	if (tf->tf_trapno == T_PGFLT && tf->tf_cs == (GD_UT | 3))
++	if (tf->tf_trapno == T_PGFLT)
 +		page_fault_handler(tf);
-+	else if (tf->tf_cs == GD_KT)
-+		panic("page fault happens in kernel mode");
 +	if (tf->tf_trapno == T_BRKPT)
 +	{
 +		// enable single-step mode for debugging,
@@ -481,6 +479,18 @@ index e27b556..9d1f70b 100644
  
  	// Unexpected trap: The user process or the kernel has a bug.
  	print_trapframe(tf);
+@@ -205,6 +299,11 @@ page_fault_handler(struct Trapframe *tf)
+ 	// Handle kernel-mode page faults.
+ 
+ 	// LAB 3: Your code here.
++	if (tf->tf_cs == GD_KT)
++	{
++		print_trapframe(tf);
++		panic("page fault happens in kernel mode");
++	}
+ 
+ 	// We've already handled kernel-mode exceptions, so if we get here,
+ 	// the page fault happened in user mode.
 diff --git a/kern/trapentry.S b/kern/trapentry.S
 index 22fc640..11fd5e1 100644
 --- a/kern/trapentry.S
