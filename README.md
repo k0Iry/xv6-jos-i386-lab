@@ -8,6 +8,7 @@ I built a docker image for this course, welcome to use :)
 
 # Results:
 JOS:
+
 LAB 2:
 
 irytu@Irys-MBP ~/D/6/lab (lab2)> cat ../../grade-lab2.txt
