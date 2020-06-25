@@ -1,6 +1,11 @@
 # xv6-jos-i386-lab
 part of my lab implementation of xv6 2018 course of MIT
 
+# Get Started
+I built a docker image for this course, welcome to use :)
+
+`docker run --name=6.828 -v /local/path/to/6.828/:/usr/src/app --rm -it kljsandjb/6.828:i386`
+
 JOS:
 lab2 grade:
 irytu@Irys-MBP ~/D/6/lab (lab2)> cat ../../grade-lab2.txt
