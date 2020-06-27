@@ -1,0 +1,102 @@
+From 8aec43bcf8c32ca0b4a720e6b4b4d9df2e3bdc13 Mon Sep 17 00:00:00 2001
+From: Aaron <kljsandjb@me.com>
+Date: Sat, 27 Jun 2020 21:22:07 +0200
+Subject: [PATCH] exercise 1 & 2 for chapter 3 Traps, interrupts, and drivers
+
+---
+ date.c    |  5 +++--
+ syscall.c | 22 ++++++++++++++++++++++
+ sysproc.c |  4 +---
+ trap.c    |  4 +++-
+ 4 files changed, 29 insertions(+), 6 deletions(-)
+
+diff --git a/date.c b/date.c
+index e89784b..f22f052 100644
+--- a/date.c
++++ b/date.c
+@@ -11,8 +11,9 @@ int main(int argc, char *argv[]) {
+   }
+ 
+   // your code to print the time in any format you like...
+-  // printf(1, "hour: %d, minute: %d, second: %d\n", r.hour, r.minute,
+-  // r.second);
++  printf(1, "UTC time:\n");
++  printf(1, "%d-%d-%d %dh:%dm:%ds\n", r.year, r.month, r.day, r.hour,
++          r.minute, r.second);
+ 
+   exit();
+ }
+\ No newline at end of file
+diff --git a/syscall.c b/syscall.c
+index f9d43c0..032695d 100644
+--- a/syscall.c
++++ b/syscall.c
+@@ -122,6 +122,28 @@ static char *syscallnames[] = {
+     [SYS_date] "date",   [SYS_dup2] "dup2",     [SYS_alarm] "alarm",
+ };
+ 
++// breakpoint here, x/37x
++// (gdb) x/37x $esp
++/*
++0x8dffff7c: 0x801054cd  0x0000003a  0x00000000  0x00000000
++0x8dffff8c: 0x8dffffac  0x8010327e  0x00000001  0x01010101
++0x8dffff9c: 0x00000000  0x00000000  0x00000000  0x00000000
++0x8dffffac: 0x801051d1  0x8dffffb4  0x00000000  0x00000000
++0x8dffffbc: 0x00000000  0x8dffffd4  0x00000000  0x00000000
++0x8dffffcc: 0x00000000  0x00000007  0x00000000  0x00000000
++0x8dffffdc: 0x00000023  0x00000023  0x00000040  0x00000000
++0x8dffffec: 0x00000013  0x0000001b  0x00000202  0x00000ff4
++0x8dfffffc: 0x00000023
++
++0x8dffffb4: trapframe passed in trap.c
++0x801051d1: return address at trapasm.S:21
++0x8dffffac: stack before calling into trap(struct trapframe *tf)
++0x8dffff9c: 0x00000000  0x00000000  0x00000000  0x00000000 (%ebx, %esi, %edi, %ebp)
++
++0x8dffff7c: 0x801054cd(return address)  0x0000003a  0x00000000  0x00000000
++0x8dffff8c: 0x8dffffac  0x8010327e  0x00000001  0x01010101 : junk while allocating stack space
++*/
++
+ void syscall(void) {
+   int num;
+   struct proc *curproc = myproc();
+diff --git a/sysproc.c b/sysproc.c
+index 20ca9f5..3d35ace 100644
+--- a/sysproc.c
++++ b/sysproc.c
+@@ -86,9 +86,7 @@ int sys_date(void) {
+   struct rtcdate *rtc = (struct rtcdate *)date;
+   // fill in rtcdate
+   cmostime(rtc);
+-  cprintf("UTC time:\n");
+-  cprintf("%d-%d-%d %dh:%dm:%ds\n", rtc->year, rtc->month, rtc->day, rtc->hour,
+-          rtc->minute, rtc->second);
++
+   return 0;
+ }
+ 
+diff --git a/trap.c b/trap.c
+index 06c2a15..106e95b 100644
+--- a/trap.c
++++ b/trap.c
+@@ -85,6 +85,8 @@ void trap(struct trapframe *tf) {
+ 
+           // inject shell code on user stack (restore caller-saved registers)
+           // shell code (add esp,8;pop edx;pop ecx;pop eax;ret;), little endian
++          // rasm2 -a x86 -b 32 "add esp,8;pop edx;pop ecx;pop eax;ret"
++          // 83c4085a5958c3
+           tf->esp -= 8;
+           *((uint *)tf->esp) = 0x5a08c483;
+           *((uint *)tf->esp + 1) = 0xc35859;
+@@ -137,7 +139,7 @@ void trap(struct trapframe *tf) {
+       panic("Out of memory\n");
+     }
+     memset(new_mem, 0, PGSIZE);
+-    cprintf("page fault at address 0x%x, will be corrected.\n", rcr2());
++    cprintf("page fault at address 0x%x, will be corrected, current stopped at eip: 0x%x\n", rcr2(), tf->eip);
+     // lazy map to the allocated physical memory page with user R/W
+     mappages(myproc()->pgdir, (void *)PGROUNDDOWN(rcr2()), PGSIZE, V2P(new_mem),
+              PTE_W | PTE_U);
+-- 
+2.24.3 (Apple Git-128)
+
