@@ -1,4 +1,4 @@
-From 3d68298cb089312758e925ad151cf88bc1ea2ffe Mon Sep 17 00:00:00 2001
+From 3a2d75dc497203e64f67e7561df99c73be7a9cfd Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Thu, 18 Jun 2020 18:47:15 +0200
 Subject: [PATCH] lab3 user env finished
@@ -11,7 +11,7 @@ challenge finished:
  inc/x86.h        |   7 ++++
  kern/env.c       |  75 +++++++++++++++++++++++++++++++++--
  kern/kdebug.c    |   6 +++
- kern/monitor.c   |  43 +++++++++++++++++---
+ kern/monitor.c   |  46 +++++++++++++++++++---
  kern/monitor.h   |   1 +
  kern/pmap.c      |  21 ++++++++++
  kern/syscall.c   |  18 ++++++++-
@@ -20,7 +20,7 @@ challenge finished:
  lib/libmain.c    |   3 +-
  lib/syscall.c    |  38 ++++++++++++++++--
  user/testbss.c   |   2 +-
- 12 files changed, 313 insertions(+), 48 deletions(-)
+ 12 files changed, 316 insertions(+), 48 deletions(-)
 
 diff --git a/inc/x86.h b/inc/x86.h
 index cc15ff4..0e679c5 100644
@@ -192,7 +192,7 @@ index 31177c8..526656f 100644
  
  	// String table validity checks
 diff --git a/kern/monitor.c b/kern/monitor.c
-index 4959e59..ea89908 100644
+index 4959e59..ac6a91e 100644
 --- a/kern/monitor.c
 +++ b/kern/monitor.c
 @@ -27,7 +27,8 @@ static struct Command commands[] = {
@@ -227,7 +227,7 @@ index 4959e59..ea89908 100644
  			}
  		}
  		cprintf("\tVirtual address 0x%08x mapped to physical address 0x%08x\n", vir_addr, PTE_ADDR(*pgtbl_entry) + PGOFF(vir_addr));
-@@ -127,6 +128,36 @@ int mon_showmappings(int argc, char **argv, struct Trapframe *tf)
+@@ -127,6 +128,39 @@ int mon_showmappings(int argc, char **argv, struct Trapframe *tf)
  	return 0;
  }
  
@@ -239,24 +239,27 @@ index 4959e59..ea89908 100644
 +		return 0;
 +	}
 +
++	const char *helpmsg = "usage debug, subcommand 'si' for single-step debug, 'continue' for continue till end or next breakpoint\n";
++
 +	if (argc != 2)
 +	{
-+		cprintf("usage 'si' for single-step debug, 'continue' for continue till end...\n");
++		cprintf("%s", helpmsg);
 +		return 0;
 +	}
 +
-+	extern void env_run(struct Env *e);
-+	extern struct Env *curenv;
++	extern void env_pop_tf(struct Trapframe *tf);
 +	if (strncmp("si", argv[1], 10) == 0)
 +	{
-+		env_run(curenv);
++		env_pop_tf(tf);
 +	}
 +	if (strncmp("continue", argv[1], 10) == 0)
 +	{
 +		// clear TF flag to disable IRQ1
 +		tf->tf_eflags &= ~0x100;
-+		env_run(curenv);
++		env_pop_tf(tf);
 +	}
++
++	cprintf("%s", helpmsg);
 +
 +	return 0;
 +}
