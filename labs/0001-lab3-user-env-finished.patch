@@ -1,4 +1,4 @@
-From 3937e6fb736492a7fe74474b4d8c6e35465d155b Mon Sep 17 00:00:00 2001
+From d7d0ec52d161e802a05c7073d2bfe779e5ea7b9f Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Thu, 18 Jun 2020 18:47:15 +0200
 Subject: [PATCH] lab3 user env finished
@@ -6,20 +6,21 @@ Subject: [PATCH] lab3 user env finished
 challenge finished:
 1. breakpoint single-stepping debugging
 2. implement sysenter for faster system call
+3. use GAS assembly altmacro for tidy-up of trapentry.S and trap.c
 ---
- inc/x86.h        |  7 ++++
- kern/env.c       | 75 ++++++++++++++++++++++++++++++++++--
- kern/kdebug.c    |  6 +++
- kern/monitor.c   | 43 ++++++++++++++++++---
- kern/monitor.h   |  1 +
- kern/pmap.c      | 21 ++++++++++
- kern/syscall.c   | 18 ++++++++-
- kern/trap.c      | 99 ++++++++++++++++++++++++++++++++++++++++++++++++
- kern/trapentry.S | 58 ++++++++++++++++++++++++++++
- lib/libmain.c    |  3 +-
- lib/syscall.c    | 38 +++++++++++++++++--
- user/testbss.c   |  2 +-
- 12 files changed, 355 insertions(+), 16 deletions(-)
+ inc/x86.h        |   7 ++++
+ kern/env.c       |  75 +++++++++++++++++++++++++++++++++--
+ kern/kdebug.c    |   6 +++
+ kern/monitor.c   |  43 +++++++++++++++++---
+ kern/monitor.h   |   1 +
+ kern/pmap.c      |  21 ++++++++++
+ kern/syscall.c   |  18 ++++++++-
+ kern/trap.c      | 101 +++++++++++++++++++++++++++++++++++++++++++++++
+ kern/trapentry.S | 100 +++++++++++++++++++++++++++++++---------------
+ lib/libmain.c    |   3 +-
+ lib/syscall.c    |  38 ++++++++++++++++--
+ user/testbss.c   |   2 +-
+ 12 files changed, 367 insertions(+), 48 deletions(-)
 
 diff --git a/inc/x86.h b/inc/x86.h
 index cc15ff4..0e679c5 100644
@@ -359,10 +360,10 @@ index 414d489..96486a1 100644
  		return -E_INVAL;
  	}
 diff --git a/kern/trap.c b/kern/trap.c
-index e27b556..595666f 100644
+index e27b556..c2b40c0 100644
 --- a/kern/trap.c
 +++ b/kern/trap.c
-@@ -25,6 +25,61 @@ struct Pseudodesc idt_pd = {
+@@ -25,6 +25,63 @@ struct Pseudodesc idt_pd = {
  	sizeof(idt) - 1, (uint32_t) idt
  };
  
@@ -390,6 +391,8 @@ index e27b556..595666f 100644
 +void simderr();
 +void systemcall();
 +void do_nothing(){}
++
++extern trap_handler default_handlers[];
 +
 +static trap_handler get_trap_handler(int trapno)
 +{
@@ -424,7 +427,7 @@ index e27b556..595666f 100644
  
  static const char *trapname(int trapno)
  {
-@@ -63,8 +118,29 @@ void
+@@ -63,8 +120,29 @@ void
  trap_init(void)
  {
  	extern struct Segdesc gdt[];
@@ -441,20 +444,20 @@ index e27b556..595666f 100644
 +		// 0-31 for TRAPs
 +		if (vector == T_BRKPT)
 +		{
-+			SETGATE(idt[vector], 1, GD_KT, get_trap_handler(vector), gdt[GD_UT >> 3].sd_dpl);
++			SETGATE(idt[vector], 1, GD_KT, default_handlers[vector], gdt[GD_UT >> 3].sd_dpl);
 +			continue;
 +		}
-+		SETGATE(idt[vector], 1, GD_KT, get_trap_handler(vector), gdt[GD_KT >> 3].sd_dpl);
++		SETGATE(idt[vector], 1, GD_KT, default_handlers[vector], gdt[GD_KT >> 3].sd_dpl);
 +	}
 +	for (; vector < 256; vector++)
 +	{
 +		// 32 - 255 for IRQs (user defined)
-+		SETGATE(idt[vector], 0, GD_KT, get_trap_handler(vector), gdt[GD_UT >> 3].sd_dpl);
++		SETGATE(idt[vector], 0, GD_KT, default_handlers[vector], gdt[GD_UT >> 3].sd_dpl);
 +	}
  
  	// Per-CPU setup 
  	trap_init_percpu();
-@@ -144,6 +220,24 @@ trap_dispatch(struct Trapframe *tf)
+@@ -144,6 +222,24 @@ trap_dispatch(struct Trapframe *tf)
  {
  	// Handle processor exceptions.
  	// LAB 3: Your code here.
@@ -479,7 +482,7 @@ index e27b556..595666f 100644
  
  	// Unexpected trap: The user process or the kernel has a bug.
  	print_trapframe(tf);
-@@ -205,6 +299,11 @@ page_fault_handler(struct Trapframe *tf)
+@@ -205,6 +301,11 @@ page_fault_handler(struct Trapframe *tf)
  	// Handle kernel-mode page faults.
  
  	// LAB 3: Your code here.
@@ -492,36 +495,82 @@ index e27b556..595666f 100644
  	// We've already handled kernel-mode exceptions, so if we get here,
  	// the page fault happened in user mode.
 diff --git a/kern/trapentry.S b/kern/trapentry.S
-index 22fc640..11fd5e1 100644
+index 22fc640..6ae7969 100644
 --- a/kern/trapentry.S
 +++ b/kern/trapentry.S
-@@ -46,10 +46,68 @@
+@@ -10,46 +10,82 @@
+ # exceptions/interrupts
+ ###################################################################
+ 
+-/* TRAPHANDLER defines a globally-visible function for handling a trap.
+- * It pushes a trap number onto the stack, then jumps to _alltraps.
+- * Use TRAPHANDLER for traps where the CPU automatically pushes an error code.
+- *
+- * You shouldn't call a TRAPHANDLER function from C, but you may
+- * need to _declare_ one in C (for instance, to get a function pointer
+- * during IDT setup).  You can declare the function with
+- *   void NAME();
+- * where NAME is the argument passed to TRAPHANDLER.
+- */
+-#define TRAPHANDLER(name, num)						\
+-	.globl name;		/* define global symbol for 'name' */	\
+-	.type name, @function;	/* symbol type is function */		\
+-	.align 2;		/* align function definition */		\
+-	name:			/* function starts here */		\
+-	pushl $(num);							\
+-	jmp _alltraps
+-
+-/* Use TRAPHANDLER_NOEC for traps where the CPU doesn't push an error code.
+- * It pushes a 0 in place of the error code, so the trap frame has the same
+- * format in either case.
+- */
+-#define TRAPHANDLER_NOEC(name, num)					\
+-	.globl name;							\
+-	.type name, @function;						\
+-	.align 2;							\
+-	name:								\
+-	pushl $0;							\
+-	pushl $(num);							\
+-	jmp _alltraps
++# https://stackoverflow.com/questions/48159005/for-loop-macro-preprocessor-for-assembly-files-in-gcc/48170044#48170044
++.altmacro
+ 
+-.text
++.macro irq_stubX number, noec
++    irq\number:
++.if noec == $1
++    pushl $0
++.endif
++    pushl $\number
++    jmp _alltraps
++.endm
++
++.macro irq_insertX number, noec
++	.section .text
++	.align 2;
++    irq_stubX \number, \noec
++    .section .data	# construct a function poiner array
++    .long irq\number
++.endm
+ 
  /*
   * Lab 3: Your code here for generating entry points for the different traps.
   */
-+TRAPHANDLER_NOEC(divide, T_DIVIDE)
-+TRAPHANDLER_NOEC(debug, T_DEBUG)
-+TRAPHANDLER_NOEC(nmi, T_NMI)
-+TRAPHANDLER_NOEC(brkpt, T_BRKPT)
-+TRAPHANDLER_NOEC(oflow, T_OFLOW)
-+TRAPHANDLER_NOEC(bound, T_BOUND)
-+TRAPHANDLER_NOEC(illop, T_ILLOP)
-+TRAPHANDLER_NOEC(device, T_DEVICE)
-+TRAPHANDLER_NOEC(corproc, 9)
-+TRAPHANDLER_NOEC(fperr, T_FPERR)
-+TRAPHANDLER_NOEC(mchk, T_MCHK)
-+TRAPHANDLER_NOEC(simderr, T_SIMDERR)
++.section .data
++.globl default_handlers;
++default_handlers:
++.set i,0
++.rept 256
++.if i >= 18 || i <= 7 || i == 15 || i == 16
++    irq_insertX %i, $1
++.else
++     irq_insertX %i, $0
++.endif
++     .set i, i+1
++.endr
  
-+TRAPHANDLER(dblflt, T_DBLFLT)
-+TRAPHANDLER(tss, T_TSS)
-+TRAPHANDLER(segnp, T_SEGNP)
-+TRAPHANDLER(stack, T_STACK)
-+TRAPHANDLER(gpflt, T_GPFLT)
-+TRAPHANDLER(pgflt, T_PGFLT)
-+TRAPHANDLER(res,  15)
-+TRAPHANDLER(align, T_ALIGN)
-+TRAPHANDLER_NOEC(systemcall, T_SYSCALL)
- 
+-
++.text
 +.globl sysenter_handler
 +.type sysenter_handler, @function
 +.align 2
