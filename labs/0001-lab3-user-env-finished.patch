@@ -1,4 +1,4 @@
-From d7d0ec52d161e802a05c7073d2bfe779e5ea7b9f Mon Sep 17 00:00:00 2001
+From 054af9ee853af36f443e3046fcda631d6e72066a Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Thu, 18 Jun 2020 18:47:15 +0200
 Subject: [PATCH] lab3 user env finished
@@ -15,12 +15,12 @@ challenge finished:
  kern/monitor.h   |   1 +
  kern/pmap.c      |  21 ++++++++++
  kern/syscall.c   |  18 ++++++++-
- kern/trap.c      | 101 +++++++++++++++++++++++++++++++++++++++++++++++
- kern/trapentry.S | 100 +++++++++++++++++++++++++++++++---------------
+ kern/trap.c      |  47 ++++++++++++++++++++++
+ kern/trapentry.S | 100 ++++++++++++++++++++++++++++++++---------------
  lib/libmain.c    |   3 +-
  lib/syscall.c    |  38 ++++++++++++++++--
  user/testbss.c   |   2 +-
- 12 files changed, 367 insertions(+), 48 deletions(-)
+ 12 files changed, 313 insertions(+), 48 deletions(-)
 
 diff --git a/inc/x86.h b/inc/x86.h
 index cc15ff4..0e679c5 100644
@@ -360,74 +360,20 @@ index 414d489..96486a1 100644
  		return -E_INVAL;
  	}
 diff --git a/kern/trap.c b/kern/trap.c
-index e27b556..c2b40c0 100644
+index e27b556..4b7f6c9 100644
 --- a/kern/trap.c
 +++ b/kern/trap.c
-@@ -25,6 +25,63 @@ struct Pseudodesc idt_pd = {
+@@ -25,6 +25,9 @@ struct Pseudodesc idt_pd = {
  	sizeof(idt) - 1, (uint32_t) idt
  };
  
 +typedef void (*trap_handler)(void);
 +
-+void divide();
-+void debug();
-+void nmi();
-+void brkpt();	// needs user level privilege
-+void oflow();
-+void bound();
-+void illop();
-+void device();
-+void dblflt();
-+void corproc();
-+void tss();
-+void segnp();
-+void stack();
-+void gpflt();
-+void pgflt();	// needs kernel level privilege
-+void res();
-+void fperr();
-+void align();
-+void mchk();
-+void simderr();
-+void systemcall();
-+void do_nothing(){}
-+
 +extern trap_handler default_handlers[];
-+
-+static trap_handler get_trap_handler(int trapno)
-+{
-+	static const trap_handler funcs[256] = {
-+		divide,
-+		debug,
-+		nmi,
-+		brkpt,
-+		oflow,
-+		bound,
-+		illop,
-+		device,
-+		dblflt,
-+		corproc,
-+		tss,
-+		segnp,
-+		stack,
-+		gpflt,
-+		pgflt,
-+		res,
-+		fperr,
-+		align,
-+		mchk,
-+		simderr,
-+		[20 ... 47] = do_nothing,
-+		[48] = systemcall,
-+		[49 ... 255] = do_nothing
-+	};
-+
-+	return funcs[trapno];
-+}
  
  static const char *trapname(int trapno)
  {
-@@ -63,8 +120,29 @@ void
+@@ -63,8 +66,29 @@ void
  trap_init(void)
  {
  	extern struct Segdesc gdt[];
@@ -457,7 +403,7 @@ index e27b556..c2b40c0 100644
  
  	// Per-CPU setup 
  	trap_init_percpu();
-@@ -144,6 +222,24 @@ trap_dispatch(struct Trapframe *tf)
+@@ -144,6 +168,24 @@ trap_dispatch(struct Trapframe *tf)
  {
  	// Handle processor exceptions.
  	// LAB 3: Your code here.
@@ -482,7 +428,7 @@ index e27b556..c2b40c0 100644
  
  	// Unexpected trap: The user process or the kernel has a bug.
  	print_trapframe(tf);
-@@ -205,6 +301,11 @@ page_fault_handler(struct Trapframe *tf)
+@@ -205,6 +247,11 @@ page_fault_handler(struct Trapframe *tf)
  	// Handle kernel-mode page faults.
  
  	// LAB 3: Your code here.
