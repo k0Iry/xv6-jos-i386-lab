@@ -1,4 +1,4 @@
-From 054af9ee853af36f443e3046fcda631d6e72066a Mon Sep 17 00:00:00 2001
+From 3d68298cb089312758e925ad151cf88bc1ea2ffe Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Thu, 18 Jun 2020 18:47:15 +0200
 Subject: [PATCH] lab3 user env finished
@@ -441,7 +441,7 @@ index e27b556..4b7f6c9 100644
  	// We've already handled kernel-mode exceptions, so if we get here,
  	// the page fault happened in user mode.
 diff --git a/kern/trapentry.S b/kern/trapentry.S
-index 22fc640..6ae7969 100644
+index 22fc640..c6b7997 100644
 --- a/kern/trapentry.S
 +++ b/kern/trapentry.S
 @@ -10,46 +10,82 @@
@@ -482,21 +482,21 @@ index 22fc640..6ae7969 100644
 +.altmacro
  
 -.text
-+.macro irq_stubX number, noec
-+    irq\number:
++.macro irq_stubX trapno, noec
++    irq\trapno:
 +.if noec == $1
 +    pushl $0
 +.endif
-+    pushl $\number
++    pushl $\trapno
 +    jmp _alltraps
 +.endm
 +
-+.macro irq_insertX number, noec
++.macro irq_insertX trapno, noec
 +	.section .text
 +	.align 2;
-+    irq_stubX \number, \noec
++    irq_stubX \trapno, \noec
 +    .section .data	# construct a function poiner array
-+    .long irq\number
++    .long irq\trapno
 +.endm
  
  /*
