@@ -4,9 +4,10 @@ part of my lab implementation of xv6 2018 course of MIT
 # Get Started
 I built a [docker image](https://hub.docker.com/r/kljsandjb/6.828) for this course, welcome to use :)
 
-`docker run --name=6.828 -v /local/path/to/6.828/:/usr/src/app --rm -it kljsandjb/6.828:i386`
+`docker run --name=6.828 -v /local/path/to/6.828/:/usr/src/app --rm -it kljsandjb/6.828:latest`
 
 to attach and debug:
+
 `docker exec -it 6.828 /bin/bash`
 
 # Results:
