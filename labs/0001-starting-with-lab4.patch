@@ -1,0 +1,83 @@
+From 60acbc96f2fe8bd6a8dd7e4357fb267ab47eeb54 Mon Sep 17 00:00:00 2001
+From: Aaron <kljsandjb@me.com>
+Date: Wed, 1 Jul 2020 19:51:32 +0000
+Subject: [PATCH] starting with lab4...
+
+---
+ kern/kernel.ld |  1 -
+ kern/mpentry.S |  4 ++++
+ kern/pmap.c    | 21 ++++++++++++++++++++-
+ 3 files changed, 24 insertions(+), 2 deletions(-)
+
+diff --git a/kern/kernel.ld b/kern/kernel.ld
+index 1cf18ef..6263cea 100644
+--- a/kern/kernel.ld
++++ b/kern/kernel.ld
+@@ -54,7 +54,6 @@ SECTIONS
+ 		*(COMMON)
+ 		PROVIDE(end = .);
+ 	}
+-	PROVIDE(end = .);
+ 
+ 
+ 	/DISCARD/ : {
+diff --git a/kern/mpentry.S b/kern/mpentry.S
+index 72dd827..7db6fc7 100644
+--- a/kern/mpentry.S
++++ b/kern/mpentry.S
+@@ -30,6 +30,10 @@
+ #define RELOC(x) ((x) - KERNBASE)
+ #define MPBOOTPHYS(s) ((s) - mpentry_start + MPENTRY_PADDR)
+ 
++# MPBOOTPHYS is needed since mpentry.S is compiled and then linked to above KERNBASE
++# we cannot relay on this to calculate the global variables' addresses, current CPU
++# cannot dereference addresses that not even existed to it
++
+ .set PROT_MODE_CSEG, 0x8	# kernel code segment selector
+ .set PROT_MODE_DSEG, 0x10	# kernel data segment selector
+ 
+diff --git a/kern/pmap.c b/kern/pmap.c
+index eb7d239..bcff8bc 100644
+--- a/kern/pmap.c
++++ b/kern/pmap.c
+@@ -333,9 +333,16 @@ page_init(void)
+ 	// free pages!
+ 	pages[0].pp_ref = 1;
+ 	pages[0].pp_link = NULL;
++
++	size_t mpentry_pgnum = PGNUM(MPENTRY_PADDR);
++	pages[mpentry_pgnum].pp_ref = 1;
++	pages[mpentry_pgnum].pp_link = NULL;
++	
+ 	size_t i;
+ 	for (i = 1; i < npages_basemem; i++)
+ 	{
++		if (i == mpentry_pgnum)
++			continue;
+ 		pages[i].pp_ref = 0;
+ 		pages[i].pp_link = page_free_list;
+ 		page_free_list = &pages[i];
+@@ -678,7 +685,19 @@ mmio_map_region(physaddr_t pa, size_t size)
+ 	// Hint: The staff solution uses boot_map_region.
+ 	//
+ 	// Your code here:
+-	panic("mmio_map_region not implemented");
++	physaddr_t pa_page_start = ROUNDDOWN(pa, PGSIZE);	// physical page including the pa
++	physaddr_t pa_page_end = ROUNDUP(pa + size, PGSIZE);	// physical page end
++	size = pa_page_end - pa_page_start;		// update size, should now be multiple of PGSIZE
++	if (base + size < MMIOLIM)
++	{
++		boot_map_region(kern_pgdir, base, size, pa_page_start, PTE_PCD | PTE_PWT | PTE_W);
++		base += size;
++		return (void *)(base - size);
++	}
++	else
++	{
++		panic("exceeding MMIOLIM...");
++	}
+ }
+ 
+ static uintptr_t user_mem_check_addr;
+-- 
+2.11.0
+
