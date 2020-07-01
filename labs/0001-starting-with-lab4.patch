@@ -31,7 +31,8 @@ index 72dd827..ead4813 100644
  
 +# MPBOOTPHYS is needed since mpentry.S is compiled and then linked to above KERNBASE
 +# we cannot relay on this to calculate the global variables' addresses, current CPU
-+# cannot dereference addresses that not even existed to it
++# cannot dereference addresses that not even existed to it, it doesn't execute at linking
++# address
 +
 +# why boot.S doesn't need something like that? because boot loader is loaded and linked
 +# at the same low address
