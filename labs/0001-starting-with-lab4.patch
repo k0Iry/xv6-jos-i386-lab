@@ -1,13 +1,13 @@
-From 60acbc96f2fe8bd6a8dd7e4357fb267ab47eeb54 Mon Sep 17 00:00:00 2001
+From 4daf3cb251b87d9d5310e6843a439011a4e43c7d Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Wed, 1 Jul 2020 19:51:32 +0000
 Subject: [PATCH] starting with lab4...
 
 ---
  kern/kernel.ld |  1 -
- kern/mpentry.S |  4 ++++
+ kern/mpentry.S | 25 +++++++++++++++++++++++++
  kern/pmap.c    | 21 ++++++++++++++++++++-
- 3 files changed, 24 insertions(+), 2 deletions(-)
+ 3 files changed, 45 insertions(+), 2 deletions(-)
 
 diff --git a/kern/kernel.ld b/kern/kernel.ld
 index 1cf18ef..6263cea 100644
@@ -22,16 +22,37 @@ index 1cf18ef..6263cea 100644
  
  	/DISCARD/ : {
 diff --git a/kern/mpentry.S b/kern/mpentry.S
-index 72dd827..7db6fc7 100644
+index 72dd827..ead4813 100644
 --- a/kern/mpentry.S
 +++ b/kern/mpentry.S
-@@ -30,6 +30,10 @@
+@@ -30,6 +30,31 @@
  #define RELOC(x) ((x) - KERNBASE)
  #define MPBOOTPHYS(s) ((s) - mpentry_start + MPENTRY_PADDR)
  
 +# MPBOOTPHYS is needed since mpentry.S is compiled and then linked to above KERNBASE
 +# we cannot relay on this to calculate the global variables' addresses, current CPU
 +# cannot dereference addresses that not even existed to it
++
++# why boot.S doesn't need something like that? because boot loader is loaded and linked
++# at the same low address
++
++/* root@fb1f4f0cba44:/usr/src/app/lab# objdump -h obj/boot/boot.out
++
++obj/boot/boot.out:     file format elf32-i386
++
++Sections:
++Idx Name          Size      VMA       LMA       File off  Algn
++  0 .text         0000019f  00007c00  00007c00  00000074  2**2
++                  CONTENTS, ALLOC, LOAD, CODE
++  1 .eh_frame     000000a8  00007da0  00007da0  00000214  2**2
++                  CONTENTS, ALLOC, LOAD, READONLY, DATA
++  2 .stab         00000870  00000000  00000000  000002bc  2**2
++                  CONTENTS, READONLY, DEBUGGING
++  3 .stabstr      00000898  00000000  00000000  00000b2c  2**0
++                  CONTENTS, READONLY, DEBUGGING
++  4 .comment      0000002d  00000000  00000000  000013c4  2**0
++                  CONTENTS, READONLY
++*/
 +
  .set PROT_MODE_CSEG, 0x8	# kernel code segment selector
  .set PROT_MODE_DSEG, 0x10	# kernel data segment selector
