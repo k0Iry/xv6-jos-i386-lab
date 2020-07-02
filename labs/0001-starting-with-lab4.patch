@@ -1,14 +1,33 @@
-From 4daf3cb251b87d9d5310e6843a439011a4e43c7d Mon Sep 17 00:00:00 2001
+From b734bd37492804d8af7f1d8c75f9f0ee6873118e Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Wed, 1 Jul 2020 19:51:32 +0000
 Subject: [PATCH] starting with lab4...
 
----
- kern/kernel.ld |  1 -
- kern/mpentry.S | 25 +++++++++++++++++++++++++
- kern/pmap.c    | 21 ++++++++++++++++++++-
- 3 files changed, 45 insertions(+), 2 deletions(-)
+finish Per-CPU State and Initialization, other than
+ts_iomb initialization
 
+now we can start multiple CPUs
+---
+ kern/env.c     |  2 +-
+ kern/kernel.ld |  1 -
+ kern/mpentry.S | 30 ++++++++++++++++++++++++++++++
+ kern/pmap.c    | 26 +++++++++++++++++++++++++-
+ kern/trap.c    | 12 ++++++------
+ 5 files changed, 62 insertions(+), 9 deletions(-)
+
+diff --git a/kern/env.c b/kern/env.c
+index a15fd9b..24894b3 100644
+--- a/kern/env.c
++++ b/kern/env.c
+@@ -55,7 +55,7 @@ struct Segdesc gdt[NCPU + 5] =
+ 
+ 	// Per-CPU TSS descriptors (starting from GD_TSS0) are initialized
+ 	// in trap_init_percpu()
+-	[GD_TSS0 >> 3] = SEG_NULL
++	// [GD_TSS0 >> 3] = SEG_NULL
+ };
+ 
+ struct Pseudodesc gdt_pd = {
 diff --git a/kern/kernel.ld b/kern/kernel.ld
 index 1cf18ef..6263cea 100644
 --- a/kern/kernel.ld
@@ -22,10 +41,10 @@ index 1cf18ef..6263cea 100644
  
  	/DISCARD/ : {
 diff --git a/kern/mpentry.S b/kern/mpentry.S
-index 72dd827..ead4813 100644
+index 72dd827..ec03251 100644
 --- a/kern/mpentry.S
 +++ b/kern/mpentry.S
-@@ -30,6 +30,31 @@
+@@ -30,6 +30,32 @@
  #define RELOC(x) ((x) - KERNBASE)
  #define MPBOOTPHYS(s) ((s) - mpentry_start + MPENTRY_PADDR)
  
@@ -58,11 +77,34 @@ index 72dd827..ead4813 100644
  .set PROT_MODE_CSEG, 0x8	# kernel code segment selector
  .set PROT_MODE_DSEG, 0x10	# kernel data segment selector
  
+@@ -60,6 +86,10 @@ start32:
+ 	movw    %ax, %fs
+ 	movw    %ax, %gs
+ 
++	# just like cpu0, we enable PTE_PS bit
++	movl    %cr4, %eax
++	orl     $(CR4_PSE), %eax  # enable superpages (4MB)
++	movl    %eax, %cr4
+ 	# Set up initial page table. We cannot use kern_pgdir yet because
+ 	# we are still running at a low EIP.
+ 	movl    $(RELOC(entry_pgdir)), %eax
 diff --git a/kern/pmap.c b/kern/pmap.c
-index eb7d239..bcff8bc 100644
+index eb7d239..c727c95 100644
 --- a/kern/pmap.c
 +++ b/kern/pmap.c
-@@ -333,9 +333,16 @@ page_init(void)
+@@ -293,6 +293,11 @@ mem_init_mp(void)
+ 	//
+ 	// LAB 4: Your code here:
+ 
++	for (int i = 0; i < NCPU; i++)
++	{
++		uintptr_t kstacktop = KSTACKTOP - i * (KSTKSIZE + KSTKGAP);
++		boot_map_region(kern_pgdir, kstacktop - KSTKSIZE, KSTKSIZE, PADDR(percpu_kstacks[i]), PTE_W);
++	}
+ }
+ 
+ // --------------------------------------------------------------
+@@ -333,9 +338,16 @@ page_init(void)
  	// free pages!
  	pages[0].pp_ref = 1;
  	pages[0].pp_link = NULL;
@@ -79,7 +121,7 @@ index eb7d239..bcff8bc 100644
  		pages[i].pp_ref = 0;
  		pages[i].pp_link = page_free_list;
  		page_free_list = &pages[i];
-@@ -678,7 +685,19 @@ mmio_map_region(physaddr_t pa, size_t size)
+@@ -678,7 +690,19 @@ mmio_map_region(physaddr_t pa, size_t size)
  	// Hint: The staff solution uses boot_map_region.
  	//
  	// Your code here:
@@ -100,6 +142,35 @@ index eb7d239..bcff8bc 100644
  }
  
  static uintptr_t user_mem_check_addr;
+diff --git a/kern/trap.c b/kern/trap.c
+index 6dae2b4..9f59e79 100644
+--- a/kern/trap.c
++++ b/kern/trap.c
+@@ -132,18 +132,18 @@ trap_init_percpu(void)
+ 
+ 	// Setup a TSS so that we get the right stack
+ 	// when we trap to the kernel.
+-	ts.ts_esp0 = KSTACKTOP;
+-	ts.ts_ss0 = GD_KD;
+-	ts.ts_iomb = sizeof(struct Taskstate);
++	thiscpu->cpu_ts.ts_esp0 = (uintptr_t)percpu_kstacks[thiscpu->cpu_id] + KSTKSIZE;
++	thiscpu->cpu_ts.ts_ss0 = GD_KD;
++	// thiscpu->cpu_ts.ts_iomb = MMIOBASE; // how to initialize this io base?
+ 
+ 	// Initialize the TSS slot of the gdt.
+-	gdt[GD_TSS0 >> 3] = SEG16(STS_T32A, (uint32_t) (&ts),
++	gdt[(GD_TSS0 >> 3) + thiscpu->cpu_id] = SEG16(STS_T32A, (uint32_t) (&thiscpu->cpu_ts),
+ 					sizeof(struct Taskstate) - 1, 0);
+-	gdt[GD_TSS0 >> 3].sd_s = 0;
++	gdt[(GD_TSS0 >> 3) + thiscpu->cpu_id].sd_s = 0;
+ 
+ 	// Load the TSS selector (like other segment selectors, the
+ 	// bottom three bits are special; we leave them 0)
+-	ltr(GD_TSS0);
++	ltr(GD_TSS0 + (thiscpu->cpu_id << 3)); // see env gdt init
+ 
+ 	// Load the IDT
+ 	lidt(&idt_pd);
 -- 
 2.11.0
 
