@@ -1,4 +1,4 @@
-From b734bd37492804d8af7f1d8c75f9f0ee6873118e Mon Sep 17 00:00:00 2001
+From 85e7ad982fa2790fed684ddf4f7ec80651d25910 Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Wed, 1 Jul 2020 19:51:32 +0000
 Subject: [PATCH] starting with lab4...
@@ -7,16 +7,23 @@ finish Per-CPU State and Initialization, other than
 ts_iomb initialization
 
 now we can start multiple CPUs
+
+need to add spinlock to sysenter, currently sysenter will not
+work properly
 ---
- kern/env.c     |  2 +-
+ kern/env.c     |  3 ++-
+ kern/init.c    | 10 ++++++++--
  kern/kernel.ld |  1 -
  kern/mpentry.S | 30 ++++++++++++++++++++++++++++++
  kern/pmap.c    | 26 +++++++++++++++++++++++++-
- kern/trap.c    | 12 ++++++------
- 5 files changed, 62 insertions(+), 9 deletions(-)
+ kern/sched.c   | 12 ++++++++++++
+ kern/syscall.c |  4 +++-
+ kern/trap.c    | 30 ++++++++++++++++++++----------
+ lib/syscall.c  |  5 +++--
+ 9 files changed, 103 insertions(+), 18 deletions(-)
 
 diff --git a/kern/env.c b/kern/env.c
-index a15fd9b..24894b3 100644
+index a15fd9b..2163b03 100644
 --- a/kern/env.c
 +++ b/kern/env.c
 @@ -55,7 +55,7 @@ struct Segdesc gdt[NCPU + 5] =
@@ -28,6 +35,51 @@ index a15fd9b..24894b3 100644
  };
  
  struct Pseudodesc gdt_pd = {
+@@ -551,6 +551,7 @@ env_run(struct Env *e)
+ 	curenv->env_runs ++;
+ 
+ 	lcr3(PADDR(curenv->env_pgdir));
++	unlock_kernel();
+ 	env_pop_tf(&(curenv->env_tf));
+ 
+ 	// panic("env_run not yet implemented");
+diff --git a/kern/init.c b/kern/init.c
+index e5491ec..feeb5f7 100644
+--- a/kern/init.c
++++ b/kern/init.c
+@@ -43,6 +43,7 @@ i386_init(void)
+ 
+ 	// Acquire the big kernel lock before waking up APs
+ 	// Your code here:
++	lock_kernel();
+ 
+ 	// Starting non-boot CPUs
+ 	boot_aps();
+@@ -52,7 +53,10 @@ i386_init(void)
+ 	ENV_CREATE(TEST, ENV_TYPE_USER);
+ #else
+ 	// Touch all you want.
+-	ENV_CREATE(user_primes, ENV_TYPE_USER);
++	ENV_CREATE(user_yield, ENV_TYPE_USER);
++	ENV_CREATE(user_yield, ENV_TYPE_USER);
++	// ENV_CREATE(user_yield, ENV_TYPE_USER);
++	// ENV_CREATE(user_yield, ENV_TYPE_USER);
+ #endif // TEST*
+ 
+ 	// Schedule and run the first user environment!
+@@ -109,9 +113,11 @@ mp_main(void)
+ 	// only one CPU can enter the scheduler at a time!
+ 	//
+ 	// Your code here:
++	lock_kernel();
++	sched_yield();
+ 
+ 	// Remove this after you finish Exercise 6
+-	for (;;);
++	// for (;;);
+ }
+ 
+ /*
 diff --git a/kern/kernel.ld b/kern/kernel.ld
 index 1cf18ef..6263cea 100644
 --- a/kern/kernel.ld
@@ -142,18 +194,84 @@ index eb7d239..c727c95 100644
  }
  
  static uintptr_t user_mem_check_addr;
+diff --git a/kern/sched.c b/kern/sched.c
+index f595bb1..4303618 100644
+--- a/kern/sched.c
++++ b/kern/sched.c
+@@ -29,6 +29,18 @@ sched_yield(void)
+ 	// below to halt the cpu.
+ 
+ 	// LAB 4: Your code here.
++	int i = 0;
++	for (; i < NENV; i++)
++	{
++		if (envs[i].env_status == ENV_RUNNABLE)
++		{
++			env_run(&envs[i]);
++		}
++	}
++	if (curenv != NULL && curenv->env_status == ENV_RUNNING)
++	{
++		env_run(curenv);
++	}
+ 
+ 	// sched_halt never returns
+ 	sched_halt();
+diff --git a/kern/syscall.c b/kern/syscall.c
+index 4e8145a..0aa0e31 100644
+--- a/kern/syscall.c
++++ b/kern/syscall.c
+@@ -23,7 +23,7 @@ sys_cputs(const char *s, size_t len)
+ 
+ 	// LAB 3: Your code here.
+ 	user_mem_assert(curenv, s, len, PTE_P);
+-	cprintf("Will write from address: 0x%08x to address: 0x%08x\n", s, s + len);
++	// cprintf("Will write from address: 0x%08x to address: 0x%08x\n", s, s + len);
+ 	if ((uint32_t)ROUNDUP(s, PGSIZE) != USTACKTOP || (uint32_t)ROUNDUP(s + len, PGSIZE) != USTACKTOP)
+ 	{
+ 		env_destroy(curenv);
+@@ -289,6 +289,8 @@ syscall(uint32_t syscallno, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4,
+ 		return sys_getenvid();
+ 	case SYS_env_destroy:
+ 		return sys_env_destroy(a1);
++	case SYS_yield:
++		sys_yield();
+ 	case NSYSCALLS:
+ 	default:
+ 		return -E_INVAL;
 diff --git a/kern/trap.c b/kern/trap.c
-index 6dae2b4..9f59e79 100644
+index 6dae2b4..1c6f1ae 100644
 --- a/kern/trap.c
 +++ b/kern/trap.c
-@@ -132,18 +132,18 @@ trap_init_percpu(void)
+@@ -73,12 +73,8 @@ void
+ trap_init(void)
+ {
+ 	extern struct Segdesc gdt[];
+-	extern void sysenter_handler();
+ 
+ 	// LAB 3: Your code here.
+-	wrmsr(0x174, GD_KT, 0);		// set (CPL = 0) CS & SS
+-	wrmsr(0x176, (uint32_t)sysenter_handler, 0);		// the sysenter handler address
+-	wrmsr(0x175, KSTACKTOP, 0);	// the stack where we drop in when trapped into kernel
+ 
+ 	int vector = 0;
+ 	for (; vector < 32; vector++)
+@@ -129,21 +125,26 @@ trap_init_percpu(void)
+ 	// user space on that CPU.
+ 	//
+ 	// LAB 4: Your code here:
++	extern void sysenter_handler();
++	uintptr_t kstacktop_percpu = (uintptr_t)percpu_kstacks[thiscpu->cpu_id] + KSTKSIZE;
++	wrmsr(0x174, GD_KT, 0);		// set (CPL = 0) CS & SS
++	wrmsr(0x176, (uint32_t)sysenter_handler, 0);		// the sysenter handler address
++	wrmsr(0x175, kstacktop_percpu, 0);	// the stack where we drop in when trapped into kernel
  
  	// Setup a TSS so that we get the right stack
  	// when we trap to the kernel.
 -	ts.ts_esp0 = KSTACKTOP;
 -	ts.ts_ss0 = GD_KD;
 -	ts.ts_iomb = sizeof(struct Taskstate);
-+	thiscpu->cpu_ts.ts_esp0 = (uintptr_t)percpu_kstacks[thiscpu->cpu_id] + KSTKSIZE;
++	thiscpu->cpu_ts.ts_esp0 = kstacktop_percpu;
 +	thiscpu->cpu_ts.ts_ss0 = GD_KD;
 +	// thiscpu->cpu_ts.ts_iomb = MMIOBASE; // how to initialize this io base?
  
@@ -171,6 +289,45 @@ index 6dae2b4..9f59e79 100644
  
  	// Load the IDT
  	lidt(&idt_pd);
+@@ -268,6 +269,15 @@ trap(struct Trapframe *tf)
+ 		// Acquire the big kernel lock before doing any
+ 		// serious kernel work.
+ 		// LAB 4: Your code here.
++
++		// Question 2: Why do we still need separate kernel stacks for each CPU?
++		// Answer: 
++		// 1. CPU 0 got interrupted into the kernel from user space, it will push tf_0 on single stack 
++		// 2. CPU 1 got interrupted too, then tf_1 is pushed on stack, and wait for irq_0 return (CPU 0 holding the lock)
++		// 3. irq_0 return, it will pop tf_1 out and try to restore user state, but what it should pop is tf_0
++		// more: https://stackoverflow.com/a/13953815/6289529
++
++		lock_kernel();
+ 		assert(curenv);
+ 
+ 		// Garbage collect if current enviroment is a zombie
+diff --git a/lib/syscall.c b/lib/syscall.c
+index 3fa7936..93bb8b5 100644
+--- a/lib/syscall.c
++++ b/lib/syscall.c
+@@ -47,6 +47,8 @@ sysenter(int num, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4)
+ 	//
+ 	// https://reverseengineering.stackexchange.com/questions/2869/how-to-use-sysenter-under-linux
+ 
++	// we also need to lock kernel here
++
+     int32_t ret;
+ 	asm volatile(
+ 		        "pushl %%ebp\n\t"
+@@ -87,8 +89,7 @@ sys_env_destroy(envid_t envid)
+ envid_t
+ sys_getenvid(void)
+ {
+-	 return sysenter(SYS_getenvid, 0, 0, 0, 0);
+-	 // return syscall(SYS_getenvid, 0, 0, 0, 0, 0, 0);
++	return sysenter(SYS_getenvid, 0, 0, 0, 0);
+ }
+ 
+ void
 -- 
 2.11.0
 
