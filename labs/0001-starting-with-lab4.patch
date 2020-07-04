@@ -1,4 +1,4 @@
-From 85e7ad982fa2790fed684ddf4f7ec80651d25910 Mon Sep 17 00:00:00 2001
+From 8f562a47d618f83ff459c50c9783bfd2b0355750 Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Wed, 1 Jul 2020 19:51:32 +0000
 Subject: [PATCH] starting with lab4...
@@ -8,19 +8,19 @@ ts_iomb initialization
 
 now we can start multiple CPUs
 
-need to add spinlock to sysenter, currently sysenter will not
-work properly
+sysenter work properly!
 ---
- kern/env.c     |  3 ++-
- kern/init.c    | 10 ++++++++--
- kern/kernel.ld |  1 -
- kern/mpentry.S | 30 ++++++++++++++++++++++++++++++
- kern/pmap.c    | 26 +++++++++++++++++++++++++-
- kern/sched.c   | 12 ++++++++++++
- kern/syscall.c |  4 +++-
- kern/trap.c    | 30 ++++++++++++++++++++----------
- lib/syscall.c  |  5 +++--
- 9 files changed, 103 insertions(+), 18 deletions(-)
+ kern/env.c       |  3 ++-
+ kern/init.c      | 10 ++++++++--
+ kern/kernel.ld   |  1 -
+ kern/mpentry.S   | 30 ++++++++++++++++++++++++++++++
+ kern/pmap.c      | 26 +++++++++++++++++++++++++-
+ kern/sched.c     | 12 ++++++++++++
+ kern/syscall.c   |  4 +++-
+ kern/trap.c      | 30 ++++++++++++++++++++----------
+ kern/trapentry.S | 17 +++++++++++++++++
+ lib/syscall.c    |  5 +++--
+ 10 files changed, 120 insertions(+), 18 deletions(-)
 
 diff --git a/kern/env.c b/kern/env.c
 index a15fd9b..2163b03 100644
@@ -44,7 +44,7 @@ index a15fd9b..2163b03 100644
  
  	// panic("env_run not yet implemented");
 diff --git a/kern/init.c b/kern/init.c
-index e5491ec..feeb5f7 100644
+index e5491ec..aaa78bb 100644
 --- a/kern/init.c
 +++ b/kern/init.c
 @@ -43,6 +43,7 @@ i386_init(void)
@@ -62,8 +62,8 @@ index e5491ec..feeb5f7 100644
 -	ENV_CREATE(user_primes, ENV_TYPE_USER);
 +	ENV_CREATE(user_yield, ENV_TYPE_USER);
 +	ENV_CREATE(user_yield, ENV_TYPE_USER);
-+	// ENV_CREATE(user_yield, ENV_TYPE_USER);
-+	// ENV_CREATE(user_yield, ENV_TYPE_USER);
++	ENV_CREATE(user_yield, ENV_TYPE_USER);
++	ENV_CREATE(user_yield, ENV_TYPE_USER);
  #endif // TEST*
  
  	// Schedule and run the first user environment!
@@ -305,6 +305,41 @@ index 6dae2b4..1c6f1ae 100644
  		assert(curenv);
  
  		// Garbage collect if current enviroment is a zombie
+diff --git a/kern/trapentry.S b/kern/trapentry.S
+index a1e5db3..bccd25d 100644
+--- a/kern/trapentry.S
++++ b/kern/trapentry.S
+@@ -53,6 +53,16 @@ default_handlers:
+ .align 2
+ # bypass trap to reach syscall directly
+ sysenter_handler:
++pushl %ecx
++pushl %edx
++pushl %eax
++pushl $kernel_lock
++call spin_lock
++addl $4, %esp
++popl %eax
++popl %edx
++popl %ecx
++
+ pushl %edi
+ pushl %ebx
+ pushl %ecx
+@@ -64,6 +74,13 @@ call syscall
+ # movl $0, %edx
+ # movl $(GD_UT), %eax	/* no need, because of continuity, GD_UT will be found by adding 16(0x10) to GD_KT */
+ # wrmsr
++pushl %eax
++pushl $kernel_lock
++call spin_unlock
++pause
++addl $4, %esp
++popl %eax
++
+ movl %esi, %edx
+ movl %ebp, %ecx
+ sysexit
 diff --git a/lib/syscall.c b/lib/syscall.c
 index 3fa7936..93bb8b5 100644
 --- a/lib/syscall.c
