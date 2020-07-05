@@ -132,7 +132,19 @@ evilhello: OK (9.4s)
 Part B score: 50/50
 
 Score: 80/80
-root@3083d04d2a44:/usr/src/app/lab# 
+
+## LAB 4:
+make[1]: Leaving directory '/usr/src/app/lab'
+dumbfork: perl: warning: Setting locale failed.
+perl: warning: Please check that your locale settings:
+        LANGUAGE = (unset),
+        LC_ALL = (unset),
+        LANG = "en_US.UTF-8"
+    are supported and installed on your system.
+perl: warning: Falling back to the standard locale ("C").
+OK (14.7s) 
+
+Part A score: 5/5
 
 
 XV6:
