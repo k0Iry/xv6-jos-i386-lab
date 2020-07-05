@@ -1,4 +1,4 @@
-From 8f562a47d618f83ff459c50c9783bfd2b0355750 Mon Sep 17 00:00:00 2001
+From 4baf7cf0f7d754909159b1d9db8908e1c6dea64e Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Wed, 1 Jul 2020 19:51:32 +0000
 Subject: [PATCH] starting with lab4...
@@ -6,22 +6,33 @@ Subject: [PATCH] starting with lab4...
 finish Per-CPU State and Initialization, other than
 ts_iomb initialization
 
-now we can start multiple CPUs
-
-sysenter work properly!
+Part A finished
 ---
+ inc/lib.h        |  1 +
  kern/env.c       |  3 ++-
- kern/init.c      | 10 ++++++++--
+ kern/init.c      | 14 ++++++++++--
  kern/kernel.ld   |  1 -
- kern/mpentry.S   | 30 ++++++++++++++++++++++++++++++
- kern/pmap.c      | 26 +++++++++++++++++++++++++-
- kern/sched.c     | 12 ++++++++++++
- kern/syscall.c   |  4 +++-
- kern/trap.c      | 30 ++++++++++++++++++++----------
- kern/trapentry.S | 17 +++++++++++++++++
- lib/syscall.c    |  5 +++--
- 10 files changed, 120 insertions(+), 18 deletions(-)
+ kern/mpentry.S   | 30 ++++++++++++++++++++++++
+ kern/pmap.c      | 26 ++++++++++++++++++++-
+ kern/sched.c     | 12 ++++++++++
+ kern/syscall.c   | 70 ++++++++++++++++++++++++++++++++++++++++++++++++++------
+ kern/trap.c      | 30 ++++++++++++++++--------
+ kern/trapentry.S | 17 ++++++++++++++
+ lib/syscall.c    | 20 ++++++++++++----
+ 11 files changed, 197 insertions(+), 27 deletions(-)
 
+diff --git a/inc/lib.h b/inc/lib.h
+index bff3fe1..2323960 100644
+--- a/inc/lib.h
++++ b/inc/lib.h
+@@ -55,6 +55,7 @@ int	sys_ipc_try_send(envid_t to_env, uint32_t value, void *pg, int perm);
+ int	sys_ipc_recv(void *rcv_pg);
+ 
+ // This must be inlined.  Exercise for reader: why?
++// Otherwise, child will call "fork" again and again...
+ static inline envid_t __attribute__((always_inline))
+ sys_exofork(void)
+ {
 diff --git a/kern/env.c b/kern/env.c
 index a15fd9b..2163b03 100644
 --- a/kern/env.c
@@ -44,7 +55,7 @@ index a15fd9b..2163b03 100644
  
  	// panic("env_run not yet implemented");
 diff --git a/kern/init.c b/kern/init.c
-index e5491ec..aaa78bb 100644
+index e5491ec..0a0faaa 100644
 --- a/kern/init.c
 +++ b/kern/init.c
 @@ -43,6 +43,7 @@ i386_init(void)
@@ -55,7 +66,7 @@ index e5491ec..aaa78bb 100644
  
  	// Starting non-boot CPUs
  	boot_aps();
-@@ -52,7 +53,10 @@ i386_init(void)
+@@ -52,7 +53,14 @@ i386_init(void)
  	ENV_CREATE(TEST, ENV_TYPE_USER);
  #else
  	// Touch all you want.
@@ -64,10 +75,14 @@ index e5491ec..aaa78bb 100644
 +	ENV_CREATE(user_yield, ENV_TYPE_USER);
 +	ENV_CREATE(user_yield, ENV_TYPE_USER);
 +	ENV_CREATE(user_yield, ENV_TYPE_USER);
++	ENV_CREATE(user_yield, ENV_TYPE_USER);
++	ENV_CREATE(user_yield, ENV_TYPE_USER);
++	ENV_CREATE(user_yield, ENV_TYPE_USER);
++	ENV_CREATE(user_yield, ENV_TYPE_USER);
  #endif // TEST*
  
  	// Schedule and run the first user environment!
-@@ -109,9 +113,11 @@ mp_main(void)
+@@ -109,9 +117,11 @@ mp_main(void)
  	// only one CPU can enter the scheduler at a time!
  	//
  	// Your code here:
@@ -218,7 +233,7 @@ index f595bb1..4303618 100644
  	// sched_halt never returns
  	sched_halt();
 diff --git a/kern/syscall.c b/kern/syscall.c
-index 4e8145a..0aa0e31 100644
+index 4e8145a..611c36b 100644
 --- a/kern/syscall.c
 +++ b/kern/syscall.c
 @@ -23,7 +23,7 @@ sys_cputs(const char *s, size_t len)
@@ -230,10 +245,112 @@ index 4e8145a..0aa0e31 100644
  	if ((uint32_t)ROUNDUP(s, PGSIZE) != USTACKTOP || (uint32_t)ROUNDUP(s + len, PGSIZE) != USTACKTOP)
  	{
  		env_destroy(curenv);
-@@ -289,6 +289,8 @@ syscall(uint32_t syscallno, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4,
+@@ -90,7 +90,15 @@ sys_exofork(void)
+ 	// will appear to return 0.
+ 
+ 	// LAB 4: Your code here.
+-	panic("sys_exofork not implemented");
++	struct Env *child = NULL;
++	int ret = 0;
++	if ((ret = env_alloc(&child, curenv->env_id)) != 0)
++		return ret;
++	child->env_status = ENV_NOT_RUNNABLE;
++	child->env_tf = curenv->env_tf;
++	child->env_tf.tf_regs.reg_eax = 0;
++
++	return child->env_id;
+ }
+ 
+ // Set envid's env_status to status, which must be ENV_RUNNABLE
+@@ -110,7 +118,16 @@ sys_env_set_status(envid_t envid, int status)
+ 	// envid's status.
+ 
+ 	// LAB 4: Your code here.
+-	panic("sys_env_set_status not implemented");
++	if (status != ENV_NOT_RUNNABLE && status != ENV_RUNNABLE)
++		return -E_INVAL;
++
++	struct Env *env = NULL;
++	int ret = 0;
++	if ((ret = envid2env(envid, &env, 1)) != 0)
++		return ret;
++
++	env->env_status = status;
++	return 0;
+ }
+ 
+ // Set the page fault upcall for 'envid' by modifying the corresponding struct
+@@ -155,7 +172,18 @@ sys_page_alloc(envid_t envid, void *va, int perm)
+ 	//   allocated!
+ 
+ 	// LAB 4: Your code here.
+-	panic("sys_page_alloc not implemented");
++	struct Env *env = NULL;
++	if (envid2env(envid, &env, 1) != 0)
++		return -E_BAD_ENV;
++	if ((uintptr_t)va >= UTOP || (uintptr_t)va % PGSIZE)
++		return -E_INVAL;
++	if ((perm & PTE_P) == 0 || (perm & PTE_U) == 0 || (perm & ~PTE_SYSCALL) != 0)
++		return -E_INVAL;
++
++	struct PageInfo *page = page_alloc(0);
++	if (page == NULL)
++		return -E_NO_MEM;
++	return page_insert(env->env_pgdir, page, va, perm);
+ }
+ 
+ // Map the page of memory at 'srcva' in srcenvid's address space
+@@ -184,9 +212,19 @@ sys_page_map(envid_t srcenvid, void *srcva,
+ 	//   parameters for correctness.
+ 	//   Use the third argument to page_lookup() to
+ 	//   check the current permissions on the page.
++	struct Env *srcenv, *dstenv;
++	if (envid2env(srcenvid, &srcenv, 1) != 0 || envid2env(dstenvid, &dstenv, 1) != 0)
++		return -E_BAD_ENV;
++	if ((uintptr_t)srcva >= UTOP || (uintptr_t)dstva >= UTOP || (uintptr_t)srcva % PGSIZE || (uintptr_t)dstva % PGSIZE)
++		return -E_INVAL;
+ 
+-	// LAB 4: Your code here.
+-	panic("sys_page_map not implemented");
++	pte_t *src_pgtbl_entry = NULL;
++	struct PageInfo *src_page = page_lookup(srcenv->env_pgdir, srcva, &src_pgtbl_entry);
++	if (src_page == NULL || (perm & PTE_P) == 0 || (perm & PTE_U) == 0 || (perm & ~PTE_SYSCALL) != 0)
++		return -E_INVAL;
++	if ((perm & PTE_W) && !(*src_pgtbl_entry & PTE_W))
++		return -E_INVAL;
++	return page_insert(dstenv->env_pgdir, src_page, dstva, perm);
+ }
+ 
+ // Unmap the page of memory at 'va' in the address space of 'envid'.
+@@ -202,7 +240,13 @@ sys_page_unmap(envid_t envid, void *va)
+ 	// Hint: This function is a wrapper around page_remove().
+ 
+ 	// LAB 4: Your code here.
+-	panic("sys_page_unmap not implemented");
++	struct Env *env = NULL;
++	if (envid2env(envid, &env, 1) != 0)
++		return -E_BAD_ENV;
++	if ((uintptr_t)va >= UTOP || (uintptr_t)va % PGSIZE)
++		return -E_INVAL;
++	page_remove(env->env_pgdir, va);
++	return 0;
+ }
+ 
+ // Try to send 'value' to the target env 'envid'.
+@@ -289,6 +333,18 @@ syscall(uint32_t syscallno, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4,
  		return sys_getenvid();
  	case SYS_env_destroy:
  		return sys_env_destroy(a1);
++	case SYS_page_alloc:
++		return sys_page_alloc(a1, (void *)a2, a3);
++	case SYS_page_map:
++		return sys_page_map(a1, (void *)a2, a3, (void *)a4, a5);
++	case SYS_page_unmap:
++		return sys_page_unmap(a1, (void *)a2);
++	case SYS_exofork:
++		return sys_exofork();
++	case SYS_env_set_status:
++		return sys_env_set_status(a1, a2);
 +	case SYS_yield:
 +		sys_yield();
  	case NSYSCALLS:
@@ -341,7 +458,7 @@ index a1e5db3..bccd25d 100644
  movl %ebp, %ecx
  sysexit
 diff --git a/lib/syscall.c b/lib/syscall.c
-index 3fa7936..93bb8b5 100644
+index 3fa7936..ea67c9c 100644
 --- a/lib/syscall.c
 +++ b/lib/syscall.c
 @@ -47,6 +47,8 @@ sysenter(int num, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4)
@@ -353,7 +470,7 @@ index 3fa7936..93bb8b5 100644
      int32_t ret;
  	asm volatile(
  		        "pushl %%ebp\n\t"
-@@ -87,8 +89,7 @@ sys_env_destroy(envid_t envid)
+@@ -87,32 +89,40 @@ sys_env_destroy(envid_t envid)
  envid_t
  sys_getenvid(void)
  {
@@ -363,6 +480,50 @@ index 3fa7936..93bb8b5 100644
  }
  
  void
+ sys_yield(void)
+ {
++	// Question 4: Whenever the kernel switches from one environment to another, it must ensure the old environment's
++	// registers are saved so they can be restored properly later. Why? Where does this happen?
++	//
++	// Answer: the kernel switches from one env to another by calling 'sys_yield', which will use 'int 0x30' to save
++	// current env status in kernel stack, next time, it will use env_run to restore
++	//
++	// Note: this system call cannot be implemented by 'sysenter', since it needs to record any update of trapframe,
++	// 'sysenter' will not be able to do so
+ 	syscall(SYS_yield, 0, 0, 0, 0, 0, 0);
+ }
+ 
+ int
+ sys_page_alloc(envid_t envid, void *va, int perm)
+ {
+-	return syscall(SYS_page_alloc, 1, envid, (uint32_t) va, perm, 0, 0);
++	return sysenter(SYS_page_alloc, envid, (uint32_t) va, perm, 0);
+ }
+ 
+ int
+ sys_page_map(envid_t srcenv, void *srcva, envid_t dstenv, void *dstva, int perm)
+ {
++	// sysenter doesn't support 5 arguments
+ 	return syscall(SYS_page_map, 1, srcenv, (uint32_t) srcva, dstenv, (uint32_t) dstva, perm);
+ }
+ 
+ int
+ sys_page_unmap(envid_t envid, void *va)
+ {
+-	return syscall(SYS_page_unmap, 1, envid, (uint32_t) va, 0, 0, 0);
++	return sysenter(SYS_page_unmap, envid, (uint32_t) va, 0, 0);
+ }
+ 
+ // sys_exofork is inlined in lib.h
+@@ -120,7 +130,7 @@ sys_page_unmap(envid_t envid, void *va)
+ int
+ sys_env_set_status(envid_t envid, int status)
+ {
+-	return syscall(SYS_env_set_status, 1, envid, status, 0, 0, 0);
++	return sysenter(SYS_env_set_status, envid, status, 0, 0);
+ }
+ 
+ int
 -- 
 2.11.0
 
