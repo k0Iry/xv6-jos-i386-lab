@@ -1,4 +1,4 @@
-From ffb0c6edf269faf9d94d8e71b01533827a5a8f25 Mon Sep 17 00:00:00 2001
+From 7c45f79b968caa3e83f8c5ee7f42e74c3843e2da Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Wed, 1 Jul 2020 19:51:32 +0000
 Subject: [PATCH] starting with lab4...
@@ -17,12 +17,12 @@ Part B: finish till exercise 11
  kern/pmap.c      | 40 +++++++++++++++++++++++--
  kern/sched.c     | 12 ++++++++
  kern/syscall.c   | 90 +++++++++++++++++++++++++++++++++++++++++++++++++-------
- kern/trap.c      | 57 ++++++++++++++++++++++++++++-------
+ kern/trap.c      | 54 +++++++++++++++++++++++++++-------
  kern/trapentry.S | 17 +++++++++++
  lib/pfentry.S    | 18 ++++++++++++
  lib/pgfault.c    |  3 +-
- lib/syscall.c    | 20 +++++++++----
- 13 files changed, 273 insertions(+), 33 deletions(-)
+ lib/syscall.c    | 22 ++++++++++----
+ 13 files changed, 271 insertions(+), 34 deletions(-)
 
 diff --git a/inc/lib.h b/inc/lib.h
 index bff3fe1..2323960 100644
@@ -415,7 +415,7 @@ index 4e8145a..4e88e9d 100644
  	default:
  		return -E_INVAL;
 diff --git a/kern/trap.c b/kern/trap.c
-index 6dae2b4..9c4f3b2 100644
+index 6dae2b4..44f5753 100644
 --- a/kern/trap.c
 +++ b/kern/trap.c
 @@ -73,12 +73,8 @@ void
@@ -480,37 +480,34 @@ index 6dae2b4..9c4f3b2 100644
  		assert(curenv);
  
  		// Garbage collect if current enviroment is a zombie
-@@ -352,7 +362,34 @@ page_fault_handler(struct Trapframe *tf)
+@@ -352,7 +362,31 @@ page_fault_handler(struct Trapframe *tf)
  	//   (the 'tf' variable points at 'curenv->env_tf').
  
  	// LAB 4: Your code here.
 +	if (curenv->env_pgfault_upcall == NULL)
 +		goto end;
  
-+	uint32_t *uxstack_start = (uint32_t *)(UXSTACKTOP - PGSIZE);
-+	user_mem_assert(curenv, uxstack_start, PGSIZE, PTE_W);
-+	if (ROUNDDOWN(fault_va, PGSIZE) != USTACKTOP)
++	struct UTrapframe *utf = (struct UTrapframe *)UXSTACKTOP;
++	if (ROUNDUP(tf->tf_esp, PGSIZE) == UXSTACKTOP)
 +	{
-+		struct UTrapframe *utf = (struct UTrapframe *)UXSTACKTOP;
-+		if (ROUNDUP(tf->tf_esp, PGSIZE) == UXSTACKTOP)
-+		{
-+			// recursive user exception
-+			uint32_t *empty_word = (uint32_t *)(tf->tf_esp - 4);
-+			*empty_word = 0;
-+			utf = (struct UTrapframe *)empty_word;
-+		}
-+		utf -= 1;	// reserve space for UTrapframe
-+		utf->utf_fault_va = fault_va;
-+		utf->utf_err = tf->tf_err;
-+		utf->utf_regs = tf->tf_regs;
-+		utf->utf_eip = tf->tf_eip;
-+		utf->utf_eflags = tf->tf_eflags;
-+		utf->utf_esp = tf->tf_esp;
-+
-+		tf->tf_esp = (uintptr_t)&utf->utf_fault_va;
-+		tf->tf_eip = (uintptr_t)curenv->env_pgfault_upcall;
-+		env_run(curenv);
++		// recursive user exception
++		uint32_t *empty_word = (uint32_t *)(tf->tf_esp - 4);
++		*empty_word = 0;
++		utf = (struct UTrapframe *)empty_word;
 +	}
++	utf -= 1; // reserve space for UTrapframe
++	// before we actually make any writing, we check the memory
++	user_mem_assert(curenv, utf, sizeof(struct UTrapframe), PTE_W);
++	utf->utf_fault_va = fault_va;
++	utf->utf_err = tf->tf_err;
++	utf->utf_regs = tf->tf_regs;
++	utf->utf_eip = tf->tf_eip;
++	utf->utf_eflags = tf->tf_eflags;
++	utf->utf_esp = tf->tf_esp;
++
++	tf->tf_esp = (uintptr_t)&utf->utf_fault_va;
++	tf->tf_eip = (uintptr_t)curenv->env_pgfault_upcall;
++	env_run(curenv);
 +end:
  	// Destroy the environment that caused the fault.
  	cprintf("[%08x] user fault va %08x ip %08x\n",
@@ -606,7 +603,7 @@ index a975518..e27172e 100644
  
  	// Save handler pointer for assembly to call.
 diff --git a/lib/syscall.c b/lib/syscall.c
-index 3fa7936..ea67c9c 100644
+index 3fa7936..198d53b 100644
 --- a/lib/syscall.c
 +++ b/lib/syscall.c
 @@ -47,6 +47,8 @@ sysenter(int num, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4)
@@ -663,12 +660,19 @@ index 3fa7936..ea67c9c 100644
  }
  
  // sys_exofork is inlined in lib.h
-@@ -120,7 +130,7 @@ sys_page_unmap(envid_t envid, void *va)
+@@ -120,13 +130,13 @@ sys_page_unmap(envid_t envid, void *va)
  int
  sys_env_set_status(envid_t envid, int status)
  {
 -	return syscall(SYS_env_set_status, 1, envid, status, 0, 0, 0);
 +	return sysenter(SYS_env_set_status, envid, status, 0, 0);
+ }
+ 
+ int
+ sys_env_set_pgfault_upcall(envid_t envid, void *upcall)
+ {
+-	return syscall(SYS_env_set_pgfault_upcall, 1, envid, (uint32_t) upcall, 0, 0, 0);
++	return sysenter(SYS_env_set_pgfault_upcall, envid, (uint32_t) upcall, 0, 0);
  }
  
  int
