@@ -1,4 +1,4 @@
-From 4baf7cf0f7d754909159b1d9db8908e1c6dea64e Mon Sep 17 00:00:00 2001
+From ffb0c6edf269faf9d94d8e71b01533827a5a8f25 Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Wed, 1 Jul 2020 19:51:32 +0000
 Subject: [PATCH] starting with lab4...
@@ -7,19 +7,22 @@ finish Per-CPU State and Initialization, other than
 ts_iomb initialization
 
 Part A finished
+Part B: finish till exercise 11
 ---
  inc/lib.h        |  1 +
- kern/env.c       |  3 ++-
- kern/init.c      | 14 ++++++++++--
+ kern/env.c       |  3 +-
+ kern/init.c      | 14 +++++++--
  kern/kernel.ld   |  1 -
- kern/mpentry.S   | 30 ++++++++++++++++++++++++
- kern/pmap.c      | 26 ++++++++++++++++++++-
- kern/sched.c     | 12 ++++++++++
- kern/syscall.c   | 70 ++++++++++++++++++++++++++++++++++++++++++++++++++------
- kern/trap.c      | 30 ++++++++++++++++--------
- kern/trapentry.S | 17 ++++++++++++++
- lib/syscall.c    | 20 ++++++++++++----
- 11 files changed, 197 insertions(+), 27 deletions(-)
+ kern/mpentry.S   | 30 +++++++++++++++++++
+ kern/pmap.c      | 40 +++++++++++++++++++++++--
+ kern/sched.c     | 12 ++++++++
+ kern/syscall.c   | 90 +++++++++++++++++++++++++++++++++++++++++++++++++-------
+ kern/trap.c      | 57 ++++++++++++++++++++++++++++-------
+ kern/trapentry.S | 17 +++++++++++
+ lib/pfentry.S    | 18 ++++++++++++
+ lib/pgfault.c    |  3 +-
+ lib/syscall.c    | 20 +++++++++----
+ 13 files changed, 273 insertions(+), 33 deletions(-)
 
 diff --git a/inc/lib.h b/inc/lib.h
 index bff3fe1..2323960 100644
@@ -156,7 +159,7 @@ index 72dd827..ec03251 100644
  	# we are still running at a low EIP.
  	movl    $(RELOC(entry_pgdir)), %eax
 diff --git a/kern/pmap.c b/kern/pmap.c
-index eb7d239..c727c95 100644
+index eb7d239..ec96624 100644
 --- a/kern/pmap.c
 +++ b/kern/pmap.c
 @@ -293,6 +293,11 @@ mem_init_mp(void)
@@ -209,6 +212,34 @@ index eb7d239..c727c95 100644
  }
  
  static uintptr_t user_mem_check_addr;
+@@ -716,7 +740,7 @@ user_mem_check(struct Env *env, const void *va, size_t len, int perm)
+ 		}
+ 
+ 		pte_t *pgtbl_entry = pgdir_walk(env->env_pgdir, (const void *)pg, 0);
+-		if (!pgtbl_entry || !(*pgtbl_entry & perm))
++		if (!pgtbl_entry || !(*pgtbl_entry & perm) || !(*pgtbl_entry & PTE_P))
+ 		{
+ 			user_mem_check_addr = pg == start ? (uintptr_t)va : pg;
+ 			return -E_FAULT;
+@@ -736,7 +760,17 @@ user_mem_check(struct Env *env, const void *va, size_t len, int perm)
+ void
+ user_mem_assert(struct Env *env, const void *va, size_t len, int perm)
+ {
+-	if (user_mem_check(env, va, len, perm | PTE_U) < 0) {
++	if (user_mem_check(env, va, len, perm) < 0) {
++		cprintf("[%08x] user_mem_check assertion failure for "
++			"va %08x\n", env->env_id, user_mem_check_addr);
++		env_destroy(env);	// may not return
++	}
++	if (user_mem_check(env, va, len, PTE_U) < 0) {
++		cprintf("[%08x] user_mem_check assertion failure for "
++			"va %08x\n", env->env_id, user_mem_check_addr);
++		env_destroy(env);	// may not return
++	}
++	if (user_mem_check(env, va, len, PTE_P) < 0) {
+ 		cprintf("[%08x] user_mem_check assertion failure for "
+ 			"va %08x\n", env->env_id, user_mem_check_addr);
+ 		env_destroy(env);	// may not return
 diff --git a/kern/sched.c b/kern/sched.c
 index f595bb1..4303618 100644
 --- a/kern/sched.c
@@ -233,19 +264,25 @@ index f595bb1..4303618 100644
  	// sched_halt never returns
  	sched_halt();
 diff --git a/kern/syscall.c b/kern/syscall.c
-index 4e8145a..611c36b 100644
+index 4e8145a..4e88e9d 100644
 --- a/kern/syscall.c
 +++ b/kern/syscall.c
-@@ -23,7 +23,7 @@ sys_cputs(const char *s, size_t len)
+@@ -22,9 +22,11 @@ sys_cputs(const char *s, size_t len)
+ 	// Destroy the environment if not.
  
  	// LAB 3: Your code here.
- 	user_mem_assert(curenv, s, len, PTE_P);
+-	user_mem_assert(curenv, s, len, PTE_P);
 -	cprintf("Will write from address: 0x%08x to address: 0x%08x\n", s, s + len);
+-	if ((uint32_t)ROUNDUP(s, PGSIZE) != USTACKTOP || (uint32_t)ROUNDUP(s + len, PGSIZE) != USTACKTOP)
++	user_mem_assert(curenv, s, len, PTE_U);
 +	// cprintf("Will write from address: 0x%08x to address: 0x%08x\n", s, s + len);
- 	if ((uint32_t)ROUNDUP(s, PGSIZE) != USTACKTOP || (uint32_t)ROUNDUP(s + len, PGSIZE) != USTACKTOP)
++	int u_stackcheck = (uint32_t)ROUNDUP(s, PGSIZE) != USTACKTOP || (uint32_t)ROUNDUP(s + len, PGSIZE) != USTACKTOP;
++	int ux_stackcheck = (uint32_t)ROUNDUP(s, PGSIZE) != UXSTACKTOP || (uint32_t)ROUNDUP(s + len, PGSIZE) != UXSTACKTOP;
++	if (u_stackcheck && ux_stackcheck)
  	{
  		env_destroy(curenv);
-@@ -90,7 +90,15 @@ sys_exofork(void)
+ 	}
+@@ -90,7 +92,15 @@ sys_exofork(void)
  	// will appear to return 0.
  
  	// LAB 4: Your code here.
@@ -262,7 +299,7 @@ index 4e8145a..611c36b 100644
  }
  
  // Set envid's env_status to status, which must be ENV_RUNNABLE
-@@ -110,7 +118,16 @@ sys_env_set_status(envid_t envid, int status)
+@@ -110,7 +120,16 @@ sys_env_set_status(envid_t envid, int status)
  	// envid's status.
  
  	// LAB 4: Your code here.
@@ -280,7 +317,20 @@ index 4e8145a..611c36b 100644
  }
  
  // Set the page fault upcall for 'envid' by modifying the corresponding struct
-@@ -155,7 +172,18 @@ sys_page_alloc(envid_t envid, void *va, int perm)
+@@ -125,7 +144,11 @@ static int
+ sys_env_set_pgfault_upcall(envid_t envid, void *func)
+ {
+ 	// LAB 4: Your code here.
+-	panic("sys_env_set_pgfault_upcall not implemented");
++	struct Env *env = NULL;
++	if (envid2env(envid, &env, 1) != 0)
++		return -E_BAD_ENV;
++	env->env_pgfault_upcall = func;
++	return 0;
+ }
+ 
+ // Allocate a page of memory and map it at 'va' with permission
+@@ -155,7 +178,24 @@ sys_page_alloc(envid_t envid, void *va, int perm)
  	//   allocated!
  
  	// LAB 4: Your code here.
@@ -296,11 +346,17 @@ index 4e8145a..611c36b 100644
 +	struct PageInfo *page = page_alloc(0);
 +	if (page == NULL)
 +		return -E_NO_MEM;
-+	return page_insert(env->env_pgdir, page, va, perm);
++	if (page_insert(env->env_pgdir, page, va, perm) != 0)
++	{
++		page_free(page);
++		return -E_NO_MEM;
++	}
++
++	return 0;
  }
  
  // Map the page of memory at 'srcva' in srcenvid's address space
-@@ -184,9 +212,19 @@ sys_page_map(envid_t srcenvid, void *srcva,
+@@ -184,9 +224,19 @@ sys_page_map(envid_t srcenvid, void *srcva,
  	//   parameters for correctness.
  	//   Use the third argument to page_lookup() to
  	//   check the current permissions on the page.
@@ -322,7 +378,7 @@ index 4e8145a..611c36b 100644
  }
  
  // Unmap the page of memory at 'va' in the address space of 'envid'.
-@@ -202,7 +240,13 @@ sys_page_unmap(envid_t envid, void *va)
+@@ -202,7 +252,13 @@ sys_page_unmap(envid_t envid, void *va)
  	// Hint: This function is a wrapper around page_remove().
  
  	// LAB 4: Your code here.
@@ -337,7 +393,7 @@ index 4e8145a..611c36b 100644
  }
  
  // Try to send 'value' to the target env 'envid'.
-@@ -289,6 +333,18 @@ syscall(uint32_t syscallno, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4,
+@@ -289,6 +345,20 @@ syscall(uint32_t syscallno, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4,
  		return sys_getenvid();
  	case SYS_env_destroy:
  		return sys_env_destroy(a1);
@@ -351,13 +407,15 @@ index 4e8145a..611c36b 100644
 +		return sys_exofork();
 +	case SYS_env_set_status:
 +		return sys_env_set_status(a1, a2);
++	case SYS_env_set_pgfault_upcall:
++		return sys_env_set_pgfault_upcall(a1, (void *)a2);
 +	case SYS_yield:
 +		sys_yield();
  	case NSYSCALLS:
  	default:
  		return -E_INVAL;
 diff --git a/kern/trap.c b/kern/trap.c
-index 6dae2b4..1c6f1ae 100644
+index 6dae2b4..9c4f3b2 100644
 --- a/kern/trap.c
 +++ b/kern/trap.c
 @@ -73,12 +73,8 @@ void
@@ -422,6 +480,41 @@ index 6dae2b4..1c6f1ae 100644
  		assert(curenv);
  
  		// Garbage collect if current enviroment is a zombie
+@@ -352,7 +362,34 @@ page_fault_handler(struct Trapframe *tf)
+ 	//   (the 'tf' variable points at 'curenv->env_tf').
+ 
+ 	// LAB 4: Your code here.
++	if (curenv->env_pgfault_upcall == NULL)
++		goto end;
+ 
++	uint32_t *uxstack_start = (uint32_t *)(UXSTACKTOP - PGSIZE);
++	user_mem_assert(curenv, uxstack_start, PGSIZE, PTE_W);
++	if (ROUNDDOWN(fault_va, PGSIZE) != USTACKTOP)
++	{
++		struct UTrapframe *utf = (struct UTrapframe *)UXSTACKTOP;
++		if (ROUNDUP(tf->tf_esp, PGSIZE) == UXSTACKTOP)
++		{
++			// recursive user exception
++			uint32_t *empty_word = (uint32_t *)(tf->tf_esp - 4);
++			*empty_word = 0;
++			utf = (struct UTrapframe *)empty_word;
++		}
++		utf -= 1;	// reserve space for UTrapframe
++		utf->utf_fault_va = fault_va;
++		utf->utf_err = tf->tf_err;
++		utf->utf_regs = tf->tf_regs;
++		utf->utf_eip = tf->tf_eip;
++		utf->utf_eflags = tf->tf_eflags;
++		utf->utf_esp = tf->tf_esp;
++
++		tf->tf_esp = (uintptr_t)&utf->utf_fault_va;
++		tf->tf_eip = (uintptr_t)curenv->env_pgfault_upcall;
++		env_run(curenv);
++	}
++end:
+ 	// Destroy the environment that caused the fault.
+ 	cprintf("[%08x] user fault va %08x ip %08x\n",
+ 		curenv->env_id, fault_va, tf->tf_eip);
 diff --git a/kern/trapentry.S b/kern/trapentry.S
 index a1e5db3..bccd25d 100644
 --- a/kern/trapentry.S
@@ -457,6 +550,61 @@ index a1e5db3..bccd25d 100644
  movl %esi, %edx
  movl %ebp, %ecx
  sysexit
+diff --git a/lib/pfentry.S b/lib/pfentry.S
+index f40aeeb..9428bfb 100644
+--- a/lib/pfentry.S
++++ b/lib/pfentry.S
+@@ -65,18 +65,36 @@ _pgfault_upcall:
+ 	// ways as registers become unavailable as scratch space.
+ 	//
+ 	// LAB 4: Your code here.
++	movl 0x28(%esp), %eax	# trap-time %eip
++	movl 0x30(%esp), %ecx	# trap-time %esp
++	leal -4(%ecx), %edx		# reserve space for holding trap-time %eip
++	movl %eax, (%edx)		# push trap-time %eip onto trap-time %esp
++	movl %edx, 0x30(%esp)	# update trap-time %esp in utf memory
+ 
+ 	// Restore the trap-time registers.  After you do this, you
+ 	// can no longer modify any general-purpose registers.
+ 	// LAB 4: Your code here.
++	add $8, %esp		# skip fault_va and error code
++	popl %edi
++	popl %esi
++	popl %ebp
++	add $4, %esp		# skip reg_oesp
++	popl %ebx
++	popl %edx
++	popl %ecx
++	popl %eax
++	add $4, %esp		# skip trap-time %eip
+ 
+ 	// Restore eflags from the stack.  After you do this, you can
+ 	// no longer use arithmetic operations or anything else that
+ 	// modifies eflags.
+ 	// LAB 4: Your code here.
++	popf		# restore eflags
+ 
+ 	// Switch back to the adjusted trap-time stack.
+ 	// LAB 4: Your code here.
++	popl %esp
+ 
+ 	// Return to re-execute the instruction that faulted.
+ 	// LAB 4: Your code here.
++	ret		# pop out stored %eip from new stack
+diff --git a/lib/pgfault.c b/lib/pgfault.c
+index a975518..e27172e 100644
+--- a/lib/pgfault.c
++++ b/lib/pgfault.c
+@@ -29,7 +29,8 @@ set_pgfault_handler(void (*handler)(struct UTrapframe *utf))
+ 	if (_pgfault_handler == 0) {
+ 		// First time through!
+ 		// LAB 4: Your code here.
+-		panic("set_pgfault_handler not implemented");
++		sys_page_alloc(sys_getenvid(), (void *)(UXSTACKTOP - PGSIZE), PTE_P | PTE_U | PTE_W);
++		sys_env_set_pgfault_upcall(sys_getenvid(), _pgfault_upcall);
+ 	}
+ 
+ 	// Save handler pointer for assembly to call.
 diff --git a/lib/syscall.c b/lib/syscall.c
 index 3fa7936..ea67c9c 100644
 --- a/lib/syscall.c
