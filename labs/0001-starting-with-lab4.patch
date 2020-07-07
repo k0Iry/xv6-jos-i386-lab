@@ -1,4 +1,4 @@
-From 7c45f79b968caa3e83f8c5ee7f42e74c3843e2da Mon Sep 17 00:00:00 2001
+From 69b253714258b6d73c4018ad7b430c56959c6efb Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Wed, 1 Jul 2020 19:51:32 +0000
 Subject: [PATCH] starting with lab4...
@@ -9,7 +9,6 @@ ts_iomb initialization
 Part A finished
 Part B: finish till exercise 11
 ---
- inc/lib.h        |  1 +
  kern/env.c       |  3 +-
  kern/init.c      | 14 +++++++--
  kern/kernel.ld   |  1 -
@@ -17,25 +16,13 @@ Part B: finish till exercise 11
  kern/pmap.c      | 40 +++++++++++++++++++++++--
  kern/sched.c     | 12 ++++++++
  kern/syscall.c   | 90 +++++++++++++++++++++++++++++++++++++++++++++++++-------
- kern/trap.c      | 54 +++++++++++++++++++++++++++-------
+ kern/trap.c      | 59 ++++++++++++++++++++++++++++++-------
  kern/trapentry.S | 17 +++++++++++
  lib/pfentry.S    | 18 ++++++++++++
  lib/pgfault.c    |  3 +-
  lib/syscall.c    | 22 ++++++++++----
- 13 files changed, 271 insertions(+), 34 deletions(-)
+ 12 files changed, 275 insertions(+), 34 deletions(-)
 
-diff --git a/inc/lib.h b/inc/lib.h
-index bff3fe1..2323960 100644
---- a/inc/lib.h
-+++ b/inc/lib.h
-@@ -55,6 +55,7 @@ int	sys_ipc_try_send(envid_t to_env, uint32_t value, void *pg, int perm);
- int	sys_ipc_recv(void *rcv_pg);
- 
- // This must be inlined.  Exercise for reader: why?
-+// Otherwise, child will call "fork" again and again...
- static inline envid_t __attribute__((always_inline))
- sys_exofork(void)
- {
 diff --git a/kern/env.c b/kern/env.c
 index a15fd9b..2163b03 100644
 --- a/kern/env.c
@@ -415,7 +402,7 @@ index 4e8145a..4e88e9d 100644
  	default:
  		return -E_INVAL;
 diff --git a/kern/trap.c b/kern/trap.c
-index 6dae2b4..44f5753 100644
+index 6dae2b4..76624d8 100644
 --- a/kern/trap.c
 +++ b/kern/trap.c
 @@ -73,12 +73,8 @@ void
@@ -480,7 +467,7 @@ index 6dae2b4..44f5753 100644
  		assert(curenv);
  
  		// Garbage collect if current enviroment is a zombie
-@@ -352,7 +362,31 @@ page_fault_handler(struct Trapframe *tf)
+@@ -352,7 +362,36 @@ page_fault_handler(struct Trapframe *tf)
  	//   (the 'tf' variable points at 'curenv->env_tf').
  
  	// LAB 4: Your code here.
@@ -497,6 +484,11 @@ index 6dae2b4..44f5753 100644
 +	}
 +	utf -= 1; // reserve space for UTrapframe
 +	// before we actually make any writing, we check the memory
++	//
++	// Note: we are currently under kernel mode, if we fail below
++	// memory access, we end up with a fault in kernel mode, which
++	// definitely panic the kernel, so we have to be very careful,
++	// we cannot check too early or too late
 +	user_mem_assert(curenv, utf, sizeof(struct UTrapframe), PTE_W);
 +	utf->utf_fault_va = fault_va;
 +	utf->utf_err = tf->tf_err;
