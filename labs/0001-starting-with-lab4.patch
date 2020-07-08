@@ -1,4 +1,4 @@
-From 69b253714258b6d73c4018ad7b430c56959c6efb Mon Sep 17 00:00:00 2001
+From 1b0ddd82e4b25e74994502cba3380a959cdbebba Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Wed, 1 Jul 2020 19:51:32 +0000
 Subject: [PATCH] starting with lab4...
@@ -8,8 +8,9 @@ ts_iomb initialization
 
 Part A finished
 Part B: finish till exercise 11
+still trying exercise 12....
 ---
- kern/env.c       |  3 +-
+ kern/env.c       |  5 ++--
  kern/init.c      | 14 +++++++--
  kern/kernel.ld   |  1 -
  kern/mpentry.S   | 30 +++++++++++++++++++
@@ -18,13 +19,14 @@ Part B: finish till exercise 11
  kern/syscall.c   | 90 +++++++++++++++++++++++++++++++++++++++++++++++++-------
  kern/trap.c      | 59 ++++++++++++++++++++++++++++++-------
  kern/trapentry.S | 17 +++++++++++
+ lib/fork.c       | 79 +++++++++++++++++++++++++++++++++++++++++++++++--
  lib/pfentry.S    | 18 ++++++++++++
- lib/pgfault.c    |  3 +-
+ lib/pgfault.c    |  5 +++-
  lib/syscall.c    | 22 ++++++++++----
- 12 files changed, 275 insertions(+), 34 deletions(-)
+ 13 files changed, 354 insertions(+), 38 deletions(-)
 
 diff --git a/kern/env.c b/kern/env.c
-index a15fd9b..2163b03 100644
+index a15fd9b..32f301a 100644
 --- a/kern/env.c
 +++ b/kern/env.c
 @@ -55,7 +55,7 @@ struct Segdesc gdt[NCPU + 5] =
@@ -36,6 +38,15 @@ index a15fd9b..2163b03 100644
  };
  
  struct Pseudodesc gdt_pd = {
+@@ -192,7 +192,7 @@ env_setup_vm(struct Env *e)
+ 	e->env_pgdir = (pte_t *)page2kva(p);
+ 	// we can copy kern part of PDEs from kern_pgdir
+ 	// no need to allocate more physical memory and map again
+-	for (int start = PDX(UTOP); start < 1024; start ++)
++	for (int start = PDX(UTOP); start < NPDENTRIES; start ++)
+ 	{
+ 		e->env_pgdir[start] = kern_pgdir[start];
+ 	}
 @@ -551,6 +551,7 @@ env_run(struct Env *e)
  	curenv->env_runs ++;
  
@@ -539,6 +550,118 @@ index a1e5db3..bccd25d 100644
  movl %esi, %edx
  movl %ebp, %ecx
  sysexit
+diff --git a/lib/fork.c b/lib/fork.c
+index 61264da..4bf92d0 100644
+--- a/lib/fork.c
++++ b/lib/fork.c
+@@ -25,6 +25,14 @@ pgfault(struct UTrapframe *utf)
+ 	//   (see <inc/memlayout.h>).
+ 
+ 	// LAB 4: Your code here.
++	if (!(err & FEC_WR))
++	{
++		panic("Access is not writing, err code %d\n", err);
++	}
++	if (!(uvpt[PGNUM(addr)] & PTE_COW))
++	{
++		panic("Fault address not marked as Copy-on-Write");
++	}
+ 
+ 	// Allocate a new page, map it at a temporary location (PFTEMP),
+ 	// copy the data from the old page to the new page, then move the new
+@@ -33,8 +41,16 @@ pgfault(struct UTrapframe *utf)
+ 	//   You should make three system calls.
+ 
+ 	// LAB 4: Your code here.
++	envid_t envid = sys_getenvid();
++	// cprintf("fault addr 0x%x, envid %x\n", addr, envid);
++	addr = ROUNDDOWN(addr, PGSIZE);	// page-size aligned
+ 
+-	panic("pgfault not implemented");
++	if ((r = sys_page_alloc(envid, (void *)PFTEMP, PTE_P | PTE_U | PTE_W)) != 0)
++		panic("sys_page_alloc, %e", r);
++	memmove((void *)PFTEMP, addr, PGSIZE);
++	// remap the addr with newly allocated writable page
++	if  ((r = sys_page_map(envid, (void *)PFTEMP, envid, addr, PTE_P | PTE_U | PTE_W)) != 0)
++		panic("sys_page_map, %e", r);
+ }
+ 
+ //
+@@ -54,7 +70,26 @@ duppage(envid_t envid, unsigned pn)
+ 	int r;
+ 
+ 	// LAB 4: Your code here.
+-	panic("duppage not implemented");
++	int perm = PTE_P | PTE_U;	// at least PTE_P and PTE_U
++	envid_t curenvid = sys_getenvid();
++
++	int is_wr = uvpt[pn] & PTE_W;
++	int is_cow = uvpt[pn]  & PTE_COW;
++	void *addr = (void *)(pn * PGSIZE);
++	if (is_wr || is_cow)
++	{
++		// create new mapping
++		if ((r = sys_page_map(curenvid, addr, envid, addr, perm | PTE_COW)) != 0)
++			panic("sys_page_map, %e", r);
++		if ((r = sys_page_map(curenvid, addr, curenvid, addr, perm | PTE_COW)) != 0)
++			panic("sys_page_map, %e", r);
++	}
++	else
++	{
++		// only remap child without PTE_COW
++		if ((r = sys_page_map(curenvid, addr, envid, addr, perm)) != 0)
++			panic("sys_page_map, %e", r);
++	}
+ 	return 0;
+ }
+ 
+@@ -78,7 +113,45 @@ envid_t
+ fork(void)
+ {
+ 	// LAB 4: Your code here.
+-	panic("fork not implemented");
++	int r;
++	uint8_t *addr;	// uint_8 * easier for calculation...
++	envid_t child = sys_exofork();
++	if (child < 0)
++		panic("sys_exofork, %e", child);
++	if (child == 0)
++	{
++		// I am child, fix the 'thisenv'
++		thisenv = &envs[ENVX(sys_getenvid())];
++		return 0;
++	}
++
++	// creating exception stack for child to run with,
++	// child inherits 'pgfault' handler globally from parent
++	// but still needs install 'pgfault_upcall' for child otherwise
++	// when child is up and running, it will page fault on its runtime stack
++	// because the child's pgdir doesn't map any page for (USTACKTOP - PGSIZE)
++	set_pgfault_handler(pgfault);
++
++	if ((r = sys_page_alloc(child, (void *)(UXSTACKTOP - PGSIZE), PTE_P | PTE_U | PTE_W)) != 0)
++		panic("sys_page_alloc, %e", r);
++	extern void _pgfault_upcall(void);
++	if ((r = sys_env_set_pgfault_upcall(child, _pgfault_upcall)) != 0)
++		panic("sys_env_set_pgfault_upcall, %e", r);
++
++	// start from 'PFTEMP' since we also need this part for exception handler use
++	for (addr = (uint8_t *)PFTEMP; addr < (uint8_t *)(UTOP - PGSIZE); addr += PGSIZE)
++	{
++		if ((uvpd[PDX(addr)] & PTE_P) && (uvpt[PGNUM(addr)] & PTE_P))
++		{
++			duppage(child, PGNUM(addr));
++		}
++	}
++
++	// Start the child environment running
++	if ((r = sys_env_set_status(child, ENV_RUNNABLE)) < 0)
++		panic("sys_env_set_status: %e", r);
++
++	return child;
+ }
+ 
+ // Challenge!
 diff --git a/lib/pfentry.S b/lib/pfentry.S
 index f40aeeb..9428bfb 100644
 --- a/lib/pfentry.S
@@ -581,16 +704,18 @@ index f40aeeb..9428bfb 100644
  	// LAB 4: Your code here.
 +	ret		# pop out stored %eip from new stack
 diff --git a/lib/pgfault.c b/lib/pgfault.c
-index a975518..e27172e 100644
+index a975518..0cb1b33 100644
 --- a/lib/pgfault.c
 +++ b/lib/pgfault.c
-@@ -29,7 +29,8 @@ set_pgfault_handler(void (*handler)(struct UTrapframe *utf))
+@@ -29,7 +29,10 @@ set_pgfault_handler(void (*handler)(struct UTrapframe *utf))
  	if (_pgfault_handler == 0) {
  		// First time through!
  		// LAB 4: Your code here.
 -		panic("set_pgfault_handler not implemented");
-+		sys_page_alloc(sys_getenvid(), (void *)(UXSTACKTOP - PGSIZE), PTE_P | PTE_U | PTE_W);
-+		sys_env_set_pgfault_upcall(sys_getenvid(), _pgfault_upcall);
++		if ((r = sys_page_alloc(sys_getenvid(), (void *)(UXSTACKTOP - PGSIZE), PTE_P | PTE_U | PTE_W)) != 0)
++			panic("sys_page_alloc, %e", r);
++		if ((r = sys_env_set_pgfault_upcall(sys_getenvid(), _pgfault_upcall)) != 0)
++			panic("sys_env_set_pgfault_upcall, %e", r);
  	}
  
  	// Save handler pointer for assembly to call.
