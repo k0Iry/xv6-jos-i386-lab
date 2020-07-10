@@ -1,4 +1,4 @@
-From 1b0ddd82e4b25e74994502cba3380a959cdbebba Mon Sep 17 00:00:00 2001
+From 79a62c3779902f33a6a3b33ba286e37a8436a2cd Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Wed, 1 Jul 2020 19:51:32 +0000
 Subject: [PATCH] starting with lab4...
@@ -10,11 +10,11 @@ Part A finished
 Part B: finish till exercise 11
 still trying exercise 12....
 ---
- kern/env.c       |  5 ++--
+ kern/env.c       |  9 +++---
  kern/init.c      | 14 +++++++--
  kern/kernel.ld   |  1 -
  kern/mpentry.S   | 30 +++++++++++++++++++
- kern/pmap.c      | 40 +++++++++++++++++++++++--
+ kern/pmap.c      | 59 +++++++++++++++++++++++++++++--------
  kern/sched.c     | 12 ++++++++
  kern/syscall.c   | 90 +++++++++++++++++++++++++++++++++++++++++++++++++-------
  kern/trap.c      | 59 ++++++++++++++++++++++++++++++-------
@@ -23,10 +23,10 @@ still trying exercise 12....
  lib/pfentry.S    | 18 ++++++++++++
  lib/pgfault.c    |  5 +++-
  lib/syscall.c    | 22 ++++++++++----
- 13 files changed, 354 insertions(+), 38 deletions(-)
+ 13 files changed, 365 insertions(+), 50 deletions(-)
 
 diff --git a/kern/env.c b/kern/env.c
-index a15fd9b..32f301a 100644
+index a15fd9b..361241b 100644
 --- a/kern/env.c
 +++ b/kern/env.c
 @@ -55,7 +55,7 @@ struct Segdesc gdt[NCPU + 5] =
@@ -38,8 +38,12 @@ index a15fd9b..32f301a 100644
  };
  
  struct Pseudodesc gdt_pd = {
-@@ -192,7 +192,7 @@ env_setup_vm(struct Env *e)
- 	e->env_pgdir = (pte_t *)page2kva(p);
+@@ -189,10 +189,10 @@ env_setup_vm(struct Env *e)
+ 
+ 	// LAB 3: Your code here.
+ 	p->pp_ref++;
+-	e->env_pgdir = (pte_t *)page2kva(p);
++	e->env_pgdir = (pde_t *)page2kva(p);
  	// we can copy kern part of PDEs from kern_pgdir
  	// no need to allocate more physical memory and map again
 -	for (int start = PDX(UTOP); start < 1024; start ++)
@@ -47,14 +51,16 @@ index a15fd9b..32f301a 100644
  	{
  		e->env_pgdir[start] = kern_pgdir[start];
  	}
-@@ -551,6 +551,7 @@ env_run(struct Env *e)
+@@ -551,8 +551,7 @@ env_run(struct Env *e)
  	curenv->env_runs ++;
  
  	lcr3(PADDR(curenv->env_pgdir));
 +	unlock_kernel();
  	env_pop_tf(&(curenv->env_tf));
+-
+-	// panic("env_run not yet implemented");
+ }
  
- 	// panic("env_run not yet implemented");
 diff --git a/kern/init.c b/kern/init.c
 index e5491ec..0a0faaa 100644
 --- a/kern/init.c
@@ -157,7 +163,7 @@ index 72dd827..ec03251 100644
  	# we are still running at a low EIP.
  	movl    $(RELOC(entry_pgdir)), %eax
 diff --git a/kern/pmap.c b/kern/pmap.c
-index eb7d239..ec96624 100644
+index eb7d239..c2e22a7 100644
 --- a/kern/pmap.c
 +++ b/kern/pmap.c
 @@ -293,6 +293,11 @@ mem_init_mp(void)
@@ -189,7 +195,35 @@ index eb7d239..ec96624 100644
  		pages[i].pp_ref = 0;
  		pages[i].pp_link = page_free_list;
  		page_free_list = &pages[i];
-@@ -678,7 +690,19 @@ mmio_map_region(physaddr_t pa, size_t size)
+@@ -551,17 +563,18 @@ page_insert(pde_t *pgdir, struct PageInfo *pp, void *va, int perm)
+ 	if (pg_tbl_entry != NULL)
+ 	{
+ 		physaddr_t pa = page2pa(pp);
+-		if (PTE_ADDR(*pg_tbl_entry) == pa)
+-		{
+-			// do not free the page
+-			pp->pp_ref--;
+-			tlb_invalidate(pgdir, va);
+-		}
+-		else if (*pg_tbl_entry & PTE_P)
++		if (*pg_tbl_entry & PTE_P)
+ 		{
+-			page_remove(pgdir, va);
++			if (PTE_ADDR(*pg_tbl_entry) == pa)
++			{
++				pp->pp_ref--;
++				tlb_invalidate(pgdir, va);
++			}
++			else
++			{
++				page_remove(pgdir, va);
++			}
+ 		}
+-		
+ 		*pg_tbl_entry = pa | perm | PTE_P;
+ 		pp->pp_ref++;
+ 	}
+@@ -678,7 +691,19 @@ mmio_map_region(physaddr_t pa, size_t size)
  	// Hint: The staff solution uses boot_map_region.
  	//
  	// Your code here:
@@ -210,7 +244,7 @@ index eb7d239..ec96624 100644
  }
  
  static uintptr_t user_mem_check_addr;
-@@ -716,7 +740,7 @@ user_mem_check(struct Env *env, const void *va, size_t len, int perm)
+@@ -716,7 +741,7 @@ user_mem_check(struct Env *env, const void *va, size_t len, int perm)
  		}
  
  		pte_t *pgtbl_entry = pgdir_walk(env->env_pgdir, (const void *)pg, 0);
@@ -219,7 +253,7 @@ index eb7d239..ec96624 100644
  		{
  			user_mem_check_addr = pg == start ? (uintptr_t)va : pg;
  			return -E_FAULT;
-@@ -736,7 +760,17 @@ user_mem_check(struct Env *env, const void *va, size_t len, int perm)
+@@ -736,7 +761,17 @@ user_mem_check(struct Env *env, const void *va, size_t len, int perm)
  void
  user_mem_assert(struct Env *env, const void *va, size_t len, int perm)
  {
@@ -551,18 +585,18 @@ index a1e5db3..bccd25d 100644
  movl %ebp, %ecx
  sysexit
 diff --git a/lib/fork.c b/lib/fork.c
-index 61264da..4bf92d0 100644
+index 61264da..3f19405 100644
 --- a/lib/fork.c
 +++ b/lib/fork.c
 @@ -25,6 +25,14 @@ pgfault(struct UTrapframe *utf)
  	//   (see <inc/memlayout.h>).
  
  	// LAB 4: Your code here.
-+	if (!(err & FEC_WR))
++	if ((err & FEC_WR) != FEC_WR)
 +	{
 +		panic("Access is not writing, err code %d\n", err);
 +	}
-+	if (!(uvpt[PGNUM(addr)] & PTE_COW))
++	if ((uvpt[PGNUM(addr)] & PTE_COW) != PTE_COW)
 +	{
 +		panic("Fault address not marked as Copy-on-Write");
 +	}
@@ -578,12 +612,12 @@ index 61264da..4bf92d0 100644
 +	addr = ROUNDDOWN(addr, PGSIZE);	// page-size aligned
  
 -	panic("pgfault not implemented");
-+	if ((r = sys_page_alloc(envid, (void *)PFTEMP, PTE_P | PTE_U | PTE_W)) != 0)
++	if ((r = sys_page_alloc(envid, PFTEMP, PTE_P | PTE_U | PTE_W)) != 0)
 +		panic("sys_page_alloc, %e", r);
 +	memmove((void *)PFTEMP, addr, PGSIZE);
 +	// remap the addr with newly allocated writable page
-+	if  ((r = sys_page_map(envid, (void *)PFTEMP, envid, addr, PTE_P | PTE_U | PTE_W)) != 0)
-+		panic("sys_page_map, %e", r);
++	if  ((r = sys_page_map(envid, PFTEMP, envid, addr, PTE_P | PTE_U | PTE_W)) != 0)
++		panic("sys_page_map, %e, fault addr 0x%x", r, addr);
  }
  
  //
@@ -595,8 +629,8 @@ index 61264da..4bf92d0 100644
 +	int perm = PTE_P | PTE_U;	// at least PTE_P and PTE_U
 +	envid_t curenvid = sys_getenvid();
 +
-+	int is_wr = uvpt[pn] & PTE_W;
-+	int is_cow = uvpt[pn]  & PTE_COW;
++	int is_wr = (uvpt[pn] & PTE_W) == PTE_W;
++	int is_cow = (uvpt[pn] & PTE_COW) == PTE_COW;
 +	void *addr = (void *)(pn * PGSIZE);
 +	if (is_wr || is_cow)
 +	{
@@ -622,6 +656,7 @@ index 61264da..4bf92d0 100644
 -	panic("fork not implemented");
 +	int r;
 +	uint8_t *addr;	// uint_8 * easier for calculation...
++	set_pgfault_handler(pgfault);
 +	envid_t child = sys_exofork();
 +	if (child < 0)
 +		panic("sys_exofork, %e", child);
@@ -637,7 +672,7 @@ index 61264da..4bf92d0 100644
 +	// but still needs install 'pgfault_upcall' for child otherwise
 +	// when child is up and running, it will page fault on its runtime stack
 +	// because the child's pgdir doesn't map any page for (USTACKTOP - PGSIZE)
-+	set_pgfault_handler(pgfault);
++	// set_pgfault_handler(pgfault);
 +
 +	if ((r = sys_page_alloc(child, (void *)(UXSTACKTOP - PGSIZE), PTE_P | PTE_U | PTE_W)) != 0)
 +		panic("sys_page_alloc, %e", r);
@@ -645,10 +680,9 @@ index 61264da..4bf92d0 100644
 +	if ((r = sys_env_set_pgfault_upcall(child, _pgfault_upcall)) != 0)
 +		panic("sys_env_set_pgfault_upcall, %e", r);
 +
-+	// start from 'PFTEMP' since we also need this part for exception handler use
-+	for (addr = (uint8_t *)PFTEMP; addr < (uint8_t *)(UTOP - PGSIZE); addr += PGSIZE)
++	for (addr = 0; addr < (uint8_t *)(UTOP - PGSIZE); addr += PGSIZE)
 +	{
-+		if ((uvpd[PDX(addr)] & PTE_P) && (uvpt[PGNUM(addr)] & PTE_P))
++		if ((uvpd[PDX(addr)] & PTE_P) == PTE_P && (uvpt[PGNUM(addr)] & PTE_P) == PTE_P)
 +		{
 +			duppage(child, PGNUM(addr));
 +		}
@@ -663,7 +697,7 @@ index 61264da..4bf92d0 100644
  
  // Challenge!
 diff --git a/lib/pfentry.S b/lib/pfentry.S
-index f40aeeb..9428bfb 100644
+index f40aeeb..82919ac 100644
 --- a/lib/pfentry.S
 +++ b/lib/pfentry.S
 @@ -65,18 +65,36 @@ _pgfault_upcall:
@@ -679,22 +713,22 @@ index f40aeeb..9428bfb 100644
  	// Restore the trap-time registers.  After you do this, you
  	// can no longer modify any general-purpose registers.
  	// LAB 4: Your code here.
-+	add $8, %esp		# skip fault_va and error code
++	addl $8, %esp		# skip fault_va and error code
 +	popl %edi
 +	popl %esi
 +	popl %ebp
-+	add $4, %esp		# skip reg_oesp
++	addl $4, %esp		# skip reg_oesp
 +	popl %ebx
 +	popl %edx
 +	popl %ecx
 +	popl %eax
-+	add $4, %esp		# skip trap-time %eip
++	addl $4, %esp		# skip trap-time %eip
  
  	// Restore eflags from the stack.  After you do this, you can
  	// no longer use arithmetic operations or anything else that
  	// modifies eflags.
  	// LAB 4: Your code here.
-+	popf		# restore eflags
++	popfl		# restore eflags
  
  	// Switch back to the adjusted trap-time stack.
  	// LAB 4: Your code here.
