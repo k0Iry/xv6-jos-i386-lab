@@ -19,6 +19,7 @@ JOS:
 
 irytu@Irys-MBP ~/D/6/lab (lab2)> cat ../../grade-lab2.txt
 /Applications/Xcode.app/Contents/Developer/usr/bin/make clean
+```
 rm -rf obj .gdbinit jos.in qemu.log
 ./grade-lab2
 + as kern/entry.S
@@ -44,9 +45,10 @@ running JOS: (1.2s)
   Kernel page directory: OK
   Page management 2: OK
 Score: 70/70
-
+```
 ## LAB 3:
 
+```
 root@3083d04d2a44:/usr/src/app/lab# make grade
 make clean
 make[1]: Entering directory '/usr/src/app/lab'
@@ -134,19 +136,140 @@ evilhello: OK (9.4s)
 Part B score: 50/50
 
 Score: 80/80
+```
 
 ## LAB 4:
-make[1]: Leaving directory '/usr/src/app/lab'
-dumbfork: perl: warning: Setting locale failed.
-perl: warning: Please check that your locale settings:
-        LANGUAGE = (unset),
-        LC_ALL = (unset),
-        LANG = "en_US.UTF-8"
-    are supported and installed on your system.
-perl: warning: Falling back to the standard locale ("C").
-OK (14.7s) 
 
+```
+root@299fd584d848:/usr/src/app/lab# make grade
+make clean
+make[1]: Entering directory '/usr/src/app/lab'
+rm -rf obj .gdbinit jos.in qemu.log
+make[1]: Leaving directory '/usr/src/app/lab'
+./grade-lab4 
+make[1]: Entering directory '/usr/src/app/lab'
++ as kern/entry.S
++ cc kern/entrypgdir.c
++ cc kern/init.c
++ cc kern/console.c
++ cc kern/monitor.c
++ cc kern/pmap.c
++ cc kern/env.c
++ cc kern/kclock.c
++ cc kern/picirq.c
++ cc kern/printf.c
++ cc kern/trap.c
++ as kern/trapentry.S
++ cc kern/sched.c
++ cc kern/syscall.c
++ cc kern/kdebug.c
++ cc lib/printfmt.c
++ cc lib/readline.c
++ cc lib/string.c
++ as kern/mpentry.S
++ cc kern/mpconfig.c
++ cc kern/lapic.c
++ cc kern/spinlock.c
++ cc[USER] lib/console.c
++ cc[USER] lib/libmain.c
++ cc[USER] lib/exit.c
++ cc[USER] lib/panic.c
++ cc[USER] lib/printf.c
++ cc[USER] lib/printfmt.c
++ cc[USER] lib/readline.c
++ cc[USER] lib/string.c
++ cc[USER] lib/syscall.c
++ cc[USER] lib/pgfault.c
++ as[USER] lib/pfentry.S
++ cc[USER] lib/fork.c
++ cc[USER] lib/ipc.c
++ ar obj/lib/libjos.a
+ar: creating obj/lib/libjos.a
++ cc[USER] user/hello.c
++ as[USER] lib/entry.S
++ ld obj/user/hello
++ cc[USER] user/buggyhello.c
++ ld obj/user/buggyhello
++ cc[USER] user/buggyhello2.c
++ ld obj/user/buggyhello2
++ cc[USER] user/evilhello.c
++ ld obj/user/evilhello
++ cc[USER] user/testbss.c
++ ld obj/user/testbss
++ cc[USER] user/divzero.c
++ ld obj/user/divzero
++ cc[USER] user/breakpoint.c
++ ld obj/user/breakpoint
++ cc[USER] user/softint.c
++ ld obj/user/softint
++ cc[USER] user/badsegment.c
++ ld obj/user/badsegment
++ cc[USER] user/faultread.c
++ ld obj/user/faultread
++ cc[USER] user/faultreadkernel.c
++ ld obj/user/faultreadkernel
++ cc[USER] user/faultwrite.c
++ ld obj/user/faultwrite
++ cc[USER] user/faultwritekernel.c
++ ld obj/user/faultwritekernel
++ cc[USER] user/idle.c
++ ld obj/user/idle
++ cc[USER] user/yield.c
++ ld obj/user/yield
++ cc[USER] user/dumbfork.c
++ ld obj/user/dumbfork
++ cc[USER] user/stresssched.c
++ ld obj/user/stresssched
++ cc[USER] user/faultdie.c
++ ld obj/user/faultdie
++ cc[USER] user/faultregs.c
++ ld obj/user/faultregs
++ cc[USER] user/faultalloc.c
++ ld obj/user/faultalloc
++ cc[USER] user/faultallocbad.c
++ ld obj/user/faultallocbad
++ cc[USER] user/faultnostack.c
++ ld obj/user/faultnostack
++ cc[USER] user/faultbadhandler.c
++ ld obj/user/faultbadhandler
++ cc[USER] user/faultevilhandler.c
++ ld obj/user/faultevilhandler
++ cc[USER] user/forktree.c
++ ld obj/user/forktree
++ cc[USER] user/sendpage.c
++ ld obj/user/sendpage
++ cc[USER] user/spin.c
++ ld obj/user/spin
++ cc[USER] user/fairness.c
++ ld obj/user/fairness
++ cc[USER] user/pingpong.c
++ ld obj/user/pingpong
++ cc[USER] user/pingpongs.c
++ ld obj/user/pingpongs
++ cc[USER] user/primes.c
++ ld obj/user/primes
++ ld obj/kern/kernel
++ as boot/boot.S
++ cc -Os boot/main.c
++ ld boot/boot
+boot block is 415 bytes (max 510)
++ mk obj/kern/kernel.img
+make[1]: Leaving directory '/usr/src/app/lab'
+dumbfork: OK (17.2s) 
 Part A score: 5/5
+
+faultread: OK (14.6s) 
+faultwrite: OK (16.6s) 
+faultdie: OK (15.2s) 
+faultregs: OK (15.9s) 
+faultalloc: OK (18.5s) 
+faultallocbad: OK (17.4s) 
+faultnostack: OK (16.3s) 
+faultbadhandler: OK (15.6s) 
+faultevilhandler: OK (15.4s) 
+forktree: OK (15.7s) 
+Part B score: 50/50
+```
 
 
 XV6:
