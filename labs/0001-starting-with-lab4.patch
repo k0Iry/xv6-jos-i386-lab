@@ -1,4 +1,4 @@
-From 79a62c3779902f33a6a3b33ba286e37a8436a2cd Mon Sep 17 00:00:00 2001
+From 8d67d060286baa3b916c2d22acb868ed6c9e9d04 Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Wed, 1 Jul 2020 19:51:32 +0000
 Subject: [PATCH] starting with lab4...
@@ -7,12 +7,15 @@ finish Per-CPU State and Initialization, other than
 ts_iomb initialization
 
 Part A finished
-Part B: finish till exercise 11
-still trying exercise 12....
+Part B finished
+
+in region_alloc, be careful the map way, should be using the
+page_insert()
 ---
- kern/env.c       |  9 +++---
+ kern/env.c       | 13 ++++----
  kern/init.c      | 14 +++++++--
  kern/kernel.ld   |  1 -
+ kern/monitor.c   |  6 ++++
  kern/mpentry.S   | 30 +++++++++++++++++++
  kern/pmap.c      | 59 +++++++++++++++++++++++++++++--------
  kern/sched.c     | 12 ++++++++
@@ -23,10 +26,10 @@ still trying exercise 12....
  lib/pfentry.S    | 18 ++++++++++++
  lib/pgfault.c    |  5 +++-
  lib/syscall.c    | 22 ++++++++++----
- 13 files changed, 365 insertions(+), 50 deletions(-)
+ 14 files changed, 373 insertions(+), 52 deletions(-)
 
 diff --git a/kern/env.c b/kern/env.c
-index a15fd9b..361241b 100644
+index a15fd9b..603ca47 100644
 --- a/kern/env.c
 +++ b/kern/env.c
 @@ -55,7 +55,7 @@ struct Segdesc gdt[NCPU + 5] =
@@ -51,6 +54,20 @@ index a15fd9b..361241b 100644
  	{
  		e->env_pgdir[start] = kern_pgdir[start];
  	}
+@@ -303,11 +303,11 @@ region_alloc(struct Env *e, void *va, size_t len)
+ 	{
+ 		pte_t *pgtbl = pgdir_walk(e->env_pgdir, (const void *)va, 1);
+ 		struct PageInfo *pg_info = NULL;
+-		if (!(*pgtbl & PTE_P))	// for already-mapped page, we don't init it in any way
++		if (pgtbl && !(*pgtbl & PTE_P))	// for already-mapped page, we don't init it in any way
+ 			pg_info = page_alloc(ALLOC_ZERO);
+ 		if (pg_info == NULL)
+ 			panic("page_alloc: %e", -E_NO_MEM);
+-		*pgtbl = page2pa(pg_info) | PTE_P | PTE_U | PTE_W;
++		page_insert(e->env_pgdir, pg_info, (void *)va, PTE_U | PTE_W);
+ 	}
+ }
+ 
 @@ -551,8 +551,7 @@ env_run(struct Env *e)
  	curenv->env_runs ++;
  
@@ -114,6 +131,31 @@ index 1cf18ef..6263cea 100644
  
  
  	/DISCARD/ : {
+diff --git a/kern/monitor.c b/kern/monitor.c
+index ac6a91e..c46e3fb 100644
+--- a/kern/monitor.c
++++ b/kern/monitor.c
+@@ -145,14 +145,20 @@ int mon_debug(int argc, char **argv, struct Trapframe *tf)
+ 	}
+ 
+ 	extern void env_pop_tf(struct Trapframe *tf);
++	extern struct spinlock kernel_lock;
++	void spin_unlock(struct spinlock *lk);
+ 	if (strncmp("si", argv[1], 10) == 0)
+ 	{
++		spin_unlock(&kernel_lock);
++		asm volatile("pause");
+ 		env_pop_tf(tf);
+ 	}
+ 	if (strncmp("continue", argv[1], 10) == 0)
+ 	{
+ 		// clear TF flag to disable IRQ1
+ 		tf->tf_eflags &= ~0x100;
++		spin_unlock(&kernel_lock);
++		asm volatile("pause");
+ 		env_pop_tf(tf);
+ 	}
+ 
 diff --git a/kern/mpentry.S b/kern/mpentry.S
 index 72dd827..ec03251 100644
 --- a/kern/mpentry.S
@@ -296,7 +338,7 @@ index f595bb1..4303618 100644
  	// sched_halt never returns
  	sched_halt();
 diff --git a/kern/syscall.c b/kern/syscall.c
-index 4e8145a..4e88e9d 100644
+index 4e8145a..d8b0db3 100644
 --- a/kern/syscall.c
 +++ b/kern/syscall.c
 @@ -22,9 +22,11 @@ sys_cputs(const char *s, size_t len)
@@ -372,7 +414,7 @@ index 4e8145a..4e88e9d 100644
 +		return -E_BAD_ENV;
 +	if ((uintptr_t)va >= UTOP || (uintptr_t)va % PGSIZE)
 +		return -E_INVAL;
-+	if ((perm & PTE_P) == 0 || (perm & PTE_U) == 0 || (perm & ~PTE_SYSCALL) != 0)
++	if ((perm & PTE_P) != PTE_P || (perm & PTE_U) != PTE_U || (perm & ~PTE_SYSCALL) != 0)
 +		return -E_INVAL;
 +
 +	struct PageInfo *page = page_alloc(0);
@@ -402,9 +444,9 @@ index 4e8145a..4e88e9d 100644
 -	panic("sys_page_map not implemented");
 +	pte_t *src_pgtbl_entry = NULL;
 +	struct PageInfo *src_page = page_lookup(srcenv->env_pgdir, srcva, &src_pgtbl_entry);
-+	if (src_page == NULL || (perm & PTE_P) == 0 || (perm & PTE_U) == 0 || (perm & ~PTE_SYSCALL) != 0)
++	if (src_page == NULL || (perm & PTE_P) != PTE_P || (perm & PTE_U) != PTE_U || (perm & ~PTE_SYSCALL) != 0)
 +		return -E_INVAL;
-+	if ((perm & PTE_W) && !(*src_pgtbl_entry & PTE_W))
++	if ((perm & PTE_W) == PTE_W && (*src_pgtbl_entry & PTE_W) != PTE_W)
 +		return -E_INVAL;
 +	return page_insert(dstenv->env_pgdir, src_page, dstva, perm);
  }
