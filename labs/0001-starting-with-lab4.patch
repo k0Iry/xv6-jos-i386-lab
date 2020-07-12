@@ -1,4 +1,4 @@
-From 8d67d060286baa3b916c2d22acb868ed6c9e9d04 Mon Sep 17 00:00:00 2001
+From 59ee2da8873adfec3be2d374bb41d38e6a573a18 Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Wed, 1 Jul 2020 19:51:32 +0000
 Subject: [PATCH] starting with lab4...
@@ -10,9 +10,9 @@ Part A finished
 Part B finished
 
 in region_alloc, be careful the map way, should be using the
-page_insert()
+page_insert(), added some write-up
 ---
- kern/env.c       | 13 ++++----
+ kern/env.c       | 18 +++++++-----
  kern/init.c      | 14 +++++++--
  kern/kernel.ld   |  1 -
  kern/monitor.c   |  6 ++++
@@ -26,10 +26,10 @@ page_insert()
  lib/pfentry.S    | 18 ++++++++++++
  lib/pgfault.c    |  5 +++-
  lib/syscall.c    | 22 ++++++++++----
- 14 files changed, 373 insertions(+), 52 deletions(-)
+ 14 files changed, 378 insertions(+), 52 deletions(-)
 
 diff --git a/kern/env.c b/kern/env.c
-index a15fd9b..603ca47 100644
+index a15fd9b..59cef07 100644
 --- a/kern/env.c
 +++ b/kern/env.c
 @@ -55,7 +55,7 @@ struct Segdesc gdt[NCPU + 5] =
@@ -54,7 +54,7 @@ index a15fd9b..603ca47 100644
  	{
  		e->env_pgdir[start] = kern_pgdir[start];
  	}
-@@ -303,11 +303,11 @@ region_alloc(struct Env *e, void *va, size_t len)
+@@ -303,11 +303,16 @@ region_alloc(struct Env *e, void *va, size_t len)
  	{
  		pte_t *pgtbl = pgdir_walk(e->env_pgdir, (const void *)va, 1);
  		struct PageInfo *pg_info = NULL;
@@ -64,11 +64,16 @@ index a15fd9b..603ca47 100644
  		if (pg_info == NULL)
  			panic("page_alloc: %e", -E_NO_MEM);
 -		*pgtbl = page2pa(pg_info) | PTE_P | PTE_U | PTE_W;
++		// previously I only did the update of page table entry
++		// but I ignored the reference count of physical pages,
++		// so when a process fork child processes, the page that
++		// contains the code & data will be freed and then re-alloc,
++		// which will cause undefined behaviors among processes running
 +		page_insert(e->env_pgdir, pg_info, (void *)va, PTE_U | PTE_W);
  	}
  }
  
-@@ -551,8 +551,7 @@ env_run(struct Env *e)
+@@ -551,8 +556,7 @@ env_run(struct Env *e)
  	curenv->env_runs ++;
  
  	lcr3(PADDR(curenv->env_pgdir));
