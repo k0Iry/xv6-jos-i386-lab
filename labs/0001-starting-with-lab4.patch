@@ -1,4 +1,4 @@
-From 59ee2da8873adfec3be2d374bb41d38e6a573a18 Mon Sep 17 00:00:00 2001
+From d335b31d49007bd26d05118b05a8476cfc4d7310 Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Wed, 1 Jul 2020 19:51:32 +0000
 Subject: [PATCH] starting with lab4...
@@ -11,25 +11,43 @@ Part B finished
 
 in region_alloc, be careful the map way, should be using the
 page_insert(), added some write-up
+finished clock interrupts handling
 ---
- kern/env.c       | 18 +++++++-----
+ inc/trap.h       |  5 ++++
+ kern/env.c       | 19 +++++++-----
  kern/init.c      | 14 +++++++--
  kern/kernel.ld   |  1 -
  kern/monitor.c   |  6 ++++
  kern/mpentry.S   | 30 +++++++++++++++++++
  kern/pmap.c      | 59 +++++++++++++++++++++++++++++--------
- kern/sched.c     | 12 ++++++++
+ kern/sched.c     | 14 ++++++++-
  kern/syscall.c   | 90 +++++++++++++++++++++++++++++++++++++++++++++++++-------
- kern/trap.c      | 59 ++++++++++++++++++++++++++++++-------
- kern/trapentry.S | 17 +++++++++++
+ kern/trap.c      | 81 ++++++++++++++++++++++++++++++++++++++++++--------
+ kern/trapentry.S | 25 ++++++++++++++++
  lib/fork.c       | 79 +++++++++++++++++++++++++++++++++++++++++++++++--
  lib/pfentry.S    | 18 ++++++++++++
  lib/pgfault.c    |  5 +++-
  lib/syscall.c    | 22 ++++++++++----
- 14 files changed, 378 insertions(+), 52 deletions(-)
+ 15 files changed, 413 insertions(+), 55 deletions(-)
 
+diff --git a/inc/trap.h b/inc/trap.h
+index b36aae3..63ffd22 100644
+--- a/inc/trap.h
++++ b/inc/trap.h
+@@ -39,6 +39,11 @@
+ #define IRQ_IDE         14
+ #define IRQ_ERROR       19
+ 
++// MSRs for sysenter
++#define MSR_IA32_SYSENTER_CS            0x174
++#define MSR_IA32_SYSENTER_ESP           0x175
++#define MSR_IA32_SYSENTER_EIP           0x176
++
+ #ifndef __ASSEMBLER__
+ 
+ #include <inc/types.h>
 diff --git a/kern/env.c b/kern/env.c
-index a15fd9b..59cef07 100644
+index a15fd9b..e1019da 100644
 --- a/kern/env.c
 +++ b/kern/env.c
 @@ -55,7 +55,7 @@ struct Segdesc gdt[NCPU + 5] =
@@ -54,7 +72,15 @@ index a15fd9b..59cef07 100644
  	{
  		e->env_pgdir[start] = kern_pgdir[start];
  	}
-@@ -303,11 +303,16 @@ region_alloc(struct Env *e, void *va, size_t len)
+@@ -262,6 +262,7 @@ env_alloc(struct Env **newenv_store, envid_t parent_id)
+ 
+ 	// Enable interrupts while in user mode.
+ 	// LAB 4: Your code here.
++	e->env_tf.tf_eflags |= FL_IF;
+ 
+ 	// Clear the page fault handler until user installs one.
+ 	e->env_pgfault_upcall = 0;
+@@ -303,11 +304,16 @@ region_alloc(struct Env *e, void *va, size_t len)
  	{
  		pte_t *pgtbl = pgdir_walk(e->env_pgdir, (const void *)va, 1);
  		struct PageInfo *pg_info = NULL;
@@ -73,7 +99,7 @@ index a15fd9b..59cef07 100644
  	}
  }
  
-@@ -551,8 +556,7 @@ env_run(struct Env *e)
+@@ -551,8 +557,7 @@ env_run(struct Env *e)
  	curenv->env_runs ++;
  
  	lcr3(PADDR(curenv->env_pgdir));
@@ -320,7 +346,7 @@ index eb7d239..c2e22a7 100644
  			"va %08x\n", env->env_id, user_mem_check_addr);
  		env_destroy(env);	// may not return
 diff --git a/kern/sched.c b/kern/sched.c
-index f595bb1..4303618 100644
+index f595bb1..b6cf2a4 100644
 --- a/kern/sched.c
 +++ b/kern/sched.c
 @@ -29,6 +29,18 @@ sched_yield(void)
@@ -342,6 +368,15 @@ index f595bb1..4303618 100644
  
  	// sched_halt never returns
  	sched_halt();
+@@ -75,7 +87,7 @@ sched_halt(void)
+ 		"pushl $0\n"
+ 		"pushl $0\n"
+ 		// Uncomment the following line after completing exercise 13
+-		//"sti\n"
++		"sti\n"
+ 		"1:\n"
+ 		"hlt\n"
+ 		"jmp 1b\n"
 diff --git a/kern/syscall.c b/kern/syscall.c
 index 4e8145a..d8b0db3 100644
 --- a/kern/syscall.c
@@ -494,7 +529,7 @@ index 4e8145a..d8b0db3 100644
  	default:
  		return -E_INVAL;
 diff --git a/kern/trap.c b/kern/trap.c
-index 6dae2b4..76624d8 100644
+index 6dae2b4..35e6013 100644
 --- a/kern/trap.c
 +++ b/kern/trap.c
 @@ -73,12 +73,8 @@ void
@@ -510,15 +545,33 @@ index 6dae2b4..76624d8 100644
  
  	int vector = 0;
  	for (; vector < 32; vector++)
-@@ -129,21 +125,26 @@ trap_init_percpu(void)
+@@ -86,10 +82,14 @@ trap_init(void)
+ 		// 0-31 for TRAPs
+ 		if (vector == T_BRKPT)
+ 		{
+-			SETGATE(idt[vector], 1, GD_KT, default_handlers[vector], gdt[GD_UT >> 3].sd_dpl);
++			// breakpoint exception should be able to trigger under CPL=3 (user mode)
++			SETGATE(idt[vector], 0, GD_KT, default_handlers[vector], gdt[GD_UT >> 3].sd_dpl);
+ 			continue;
+ 		}
+-		SETGATE(idt[vector], 1, GD_KT, default_handlers[vector], gdt[GD_KT >> 3].sd_dpl);
++		// so we reset IF flag
++		// e.g. when we enable IRQ for user environment, we first got trapped in irq_x,
++		// and we don't clear IF, then we might got another irq_y when handling irq_x
++		SETGATE(idt[vector], 0, GD_KT, default_handlers[vector], gdt[GD_KT >> 3].sd_dpl);
+ 	}
+ 	for (; vector < 256; vector++)
+ 	{
+@@ -129,21 +129,27 @@ trap_init_percpu(void)
  	// user space on that CPU.
  	//
  	// LAB 4: Your code here:
-+	extern void sysenter_handler();
 +	uintptr_t kstacktop_percpu = (uintptr_t)percpu_kstacks[thiscpu->cpu_id] + KSTKSIZE;
-+	wrmsr(0x174, GD_KT, 0);		// set (CPL = 0) CS & SS
-+	wrmsr(0x176, (uint32_t)sysenter_handler, 0);		// the sysenter handler address
-+	wrmsr(0x175, kstacktop_percpu, 0);	// the stack where we drop in when trapped into kernel
++
++	extern void sysenter_handler();
++	wrmsr(MSR_IA32_SYSENTER_CS, GD_KT, 0);		// set (CPL = 0) CS & SS
++	wrmsr(MSR_IA32_SYSENTER_EIP, (uint32_t)sysenter_handler, 0);		// the sysenter handler address
++	wrmsr(MSR_IA32_SYSENTER_ESP, kstacktop_percpu, 0);	// the stack where we drop in when trapped into kernel
  
  	// Setup a TSS so that we get the right stack
  	// when we trap to the kernel.
@@ -543,10 +596,31 @@ index 6dae2b4..76624d8 100644
  
  	// Load the IDT
  	lidt(&idt_pd);
-@@ -268,6 +269,15 @@ trap(struct Trapframe *tf)
+@@ -231,6 +237,19 @@ trap_dispatch(struct Trapframe *tf)
+ 	// Handle clock interrupts. Don't forget to acknowledge the
+ 	// interrupt using lapic_eoi() before calling the scheduler!
+ 	// LAB 4: Your code here.
++	lapic_eoi();
++	if (tf->tf_trapno >= IRQ_OFFSET && tf->tf_trapno < IRQ_OFFSET + 16)
++	{
++		switch (tf->tf_trapno)
++		{
++		case IRQ_OFFSET + IRQ_TIMER:
++			sched_yield();
++			break;
++
++		default:
++			break;
++		}
++	}
+ 
+ 	// Unexpected trap: The user process or the kernel has a bug.
+ 	print_trapframe(tf);
+@@ -268,6 +287,15 @@ trap(struct Trapframe *tf)
  		// Acquire the big kernel lock before doing any
  		// serious kernel work.
  		// LAB 4: Your code here.
++		lock_kernel();
 +
 +		// Question 2: Why do we still need separate kernel stacks for each CPU?
 +		// Answer: 
@@ -555,11 +629,10 @@ index 6dae2b4..76624d8 100644
 +		// 3. irq_0 return, it will pop tf_1 out and try to restore user state, but what it should pop is tf_0
 +		// more: https://stackoverflow.com/a/13953815/6289529
 +
-+		lock_kernel();
  		assert(curenv);
  
  		// Garbage collect if current enviroment is a zombie
-@@ -352,7 +362,36 @@ page_fault_handler(struct Trapframe *tf)
+@@ -352,7 +380,36 @@ page_fault_handler(struct Trapframe *tf)
  	//   (the 'tf' variable points at 'curenv->env_tf').
  
  	// LAB 4: Your code here.
@@ -597,12 +670,20 @@ index 6dae2b4..76624d8 100644
  	cprintf("[%08x] user fault va %08x ip %08x\n",
  		curenv->env_id, fault_va, tf->tf_eip);
 diff --git a/kern/trapentry.S b/kern/trapentry.S
-index a1e5db3..bccd25d 100644
+index a1e5db3..aa6bd00 100644
 --- a/kern/trapentry.S
 +++ b/kern/trapentry.S
-@@ -53,6 +53,16 @@ default_handlers:
+@@ -52,7 +52,24 @@ default_handlers:
+ .type sysenter_handler, @function
  .align 2
  # bypass trap to reach syscall directly
++# When SYSENTER is called, CS is set to the value in IA32_SYSENTER_CS. SS is set to IA32_SYSENTER_CS + 8.
++# EIP is loaded from IA32_SYSENTER_EIP and ESP is loaded from IA32_SYSENTER_ESP.
++# The CPU is now in ring 0, with EFLAGS.IF=0, EFLAGS.VM=0, EFLAGS.RF=0. (Note: interrupt disabled)
++# an example: http://articles.manugarg.com/systemcallinlinux2_6.html
++
++# (about popf) The I/O privilege level is altered only when executing at privilege level 0. 
++# The interrupt flag is altered only when executing at a level at least as privileged as the I/O privilege level.
  sysenter_handler:
 +pushl %ecx
 +pushl %edx
@@ -617,7 +698,7 @@ index a1e5db3..bccd25d 100644
  pushl %edi
  pushl %ebx
  pushl %ecx
-@@ -64,6 +74,13 @@ call syscall
+@@ -64,8 +81,16 @@ call syscall
  # movl $0, %edx
  # movl $(GD_UT), %eax	/* no need, because of continuity, GD_UT will be found by adding 16(0x10) to GD_KT */
  # wrmsr
@@ -630,7 +711,10 @@ index a1e5db3..bccd25d 100644
 +
  movl %esi, %edx
  movl %ebp, %ecx
++sti     # enable interrupts (IF flag in eflags)
  sysexit
+ 
+ /*
 diff --git a/lib/fork.c b/lib/fork.c
 index 61264da..3f19405 100644
 --- a/lib/fork.c
