@@ -1,4 +1,4 @@
-From d335b31d49007bd26d05118b05a8476cfc4d7310 Mon Sep 17 00:00:00 2001
+From 68822cfbf87a61c81f2e98a30e9697ce4332f710 Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Wed, 1 Jul 2020 19:51:32 +0000
 Subject: [PATCH] starting with lab4...
@@ -12,23 +12,26 @@ Part B finished
 in region_alloc, be careful the map way, should be using the
 page_insert(), added some write-up
 finished clock interrupts handling
+
+adding ipc support
 ---
- inc/trap.h       |  5 ++++
- kern/env.c       | 19 +++++++-----
- kern/init.c      | 14 +++++++--
- kern/kernel.ld   |  1 -
- kern/monitor.c   |  6 ++++
- kern/mpentry.S   | 30 +++++++++++++++++++
- kern/pmap.c      | 59 +++++++++++++++++++++++++++++--------
- kern/sched.c     | 14 ++++++++-
- kern/syscall.c   | 90 +++++++++++++++++++++++++++++++++++++++++++++++++-------
- kern/trap.c      | 81 ++++++++++++++++++++++++++++++++++++++++++--------
- kern/trapentry.S | 25 ++++++++++++++++
- lib/fork.c       | 79 +++++++++++++++++++++++++++++++++++++++++++++++--
- lib/pfentry.S    | 18 ++++++++++++
- lib/pgfault.c    |  5 +++-
- lib/syscall.c    | 22 ++++++++++----
- 15 files changed, 413 insertions(+), 55 deletions(-)
+ inc/trap.h       |   5 ++
+ kern/env.c       |  19 +++++---
+ kern/init.c      |  14 +++++-
+ kern/kernel.ld   |   1 -
+ kern/monitor.c   |   6 +++
+ kern/mpentry.S   |  30 ++++++++++++
+ kern/pmap.c      |  59 +++++++++++++++++++-----
+ kern/sched.c     |  14 +++++-
+ kern/syscall.c   | 137 ++++++++++++++++++++++++++++++++++++++++++++++++++-----
+ kern/trap.c      |  81 +++++++++++++++++++++++++++-----
+ kern/trapentry.S |  25 ++++++++++
+ lib/fork.c       |  79 ++++++++++++++++++++++++++++++--
+ lib/ipc.c        |  29 ++++++++++--
+ lib/pfentry.S    |  18 ++++++++
+ lib/pgfault.c    |   5 +-
+ lib/syscall.c    |  25 +++++++---
+ 16 files changed, 486 insertions(+), 61 deletions(-)
 
 diff --git a/inc/trap.h b/inc/trap.h
 index b36aae3..63ffd22 100644
@@ -378,7 +381,7 @@ index f595bb1..b6cf2a4 100644
  		"hlt\n"
  		"jmp 1b\n"
 diff --git a/kern/syscall.c b/kern/syscall.c
-index 4e8145a..d8b0db3 100644
+index 4e8145a..e90e974 100644
 --- a/kern/syscall.c
 +++ b/kern/syscall.c
 @@ -22,9 +22,11 @@ sys_cputs(const char *s, size_t len)
@@ -507,7 +510,64 @@ index 4e8145a..d8b0db3 100644
  }
  
  // Try to send 'value' to the target env 'envid'.
-@@ -289,6 +345,20 @@ syscall(uint32_t syscallno, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4,
+@@ -247,7 +303,38 @@ static int
+ sys_ipc_try_send(envid_t envid, uint32_t value, void *srcva, unsigned perm)
+ {
+ 	// LAB 4: Your code here.
+-	panic("sys_ipc_try_send not implemented");
++	struct Env *env = NULL;
++	int r = 0;
++	struct PageInfo *pp = NULL;
++	pte_t *pgtbl_entry = NULL;
++	if ((r = envid2env(envid, &env, 0)) != 0)
++		return r;
++	if (env->env_ipc_recving == 0)
++		return -E_IPC_NOT_RECV;
++	if ((uintptr_t)srcva < UTOP && (uintptr_t)srcva % PGSIZE)
++		return -E_INVAL;
++	if ((uintptr_t)srcva < UTOP && ((perm & PTE_P) != PTE_P || (perm & PTE_U) != PTE_U || (perm & ~PTE_SYSCALL) != 0))
++		return -E_INVAL;
++	if ((uintptr_t)srcva < UTOP && (pp = page_lookup(curenv->env_pgdir, srcva, &pgtbl_entry)) == NULL)
++		return -E_INVAL;
++	if ((uintptr_t)srcva < UTOP && (perm & PTE_W) && !(*pgtbl_entry & PTE_W))
++		return -E_INVAL;
++
++	env->env_ipc_perm = 0;
++	if ((uintptr_t)srcva < UTOP && (uintptr_t)(env->env_ipc_dstva) < UTOP)
++	{
++		// send a page, install it in receiver's address space
++		if ((r = page_insert(env->env_pgdir, pp, env->env_ipc_dstva, perm)) != 0)
++			return r;
++		env->env_ipc_perm = perm;	// update perm if there is actually a page being transferred
++	}
++	env->env_ipc_recving = 0;
++	env->env_ipc_from = curenv->env_id;
++	env->env_ipc_value = value;
++	env->env_status = ENV_RUNNABLE;
++	env->env_tf.tf_regs.reg_eax = 0;	// next time receiver being woken-up, it returns 0 and got the value or page it needs
++
++	return 0;
+ }
+ 
+ // Block until a value is ready.  Record that you want to receive
+@@ -265,7 +352,15 @@ static int
+ sys_ipc_recv(void *dstva)
+ {
+ 	// LAB 4: Your code here.
+-	panic("sys_ipc_recv not implemented");
++	if ((uintptr_t)dstva < UTOP && (uintptr_t)dstva % PGSIZE)
++		return -E_INVAL;
++	curenv->env_ipc_recving = 1;	// ready for receiving something
++	curenv->env_ipc_dstva = dstva;	// tell sender if we want a page
++
++	// now we give up CPU
++	curenv->env_status == ENV_NOT_RUNNABLE;
++	sched_yield();
++
+ 	return 0;
+ }
+ 
+@@ -289,6 +384,24 @@ syscall(uint32_t syscallno, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4,
  		return sys_getenvid();
  	case SYS_env_destroy:
  		return sys_env_destroy(a1);
@@ -525,11 +585,15 @@ index 4e8145a..d8b0db3 100644
 +		return sys_env_set_pgfault_upcall(a1, (void *)a2);
 +	case SYS_yield:
 +		sys_yield();
++	case SYS_ipc_try_send:
++		return sys_ipc_try_send(a1, a2, (void *)a3, a4);
++	case SYS_ipc_recv:
++		return sys_ipc_recv((void *)a1);
  	case NSYSCALLS:
  	default:
  		return -E_INVAL;
 diff --git a/kern/trap.c b/kern/trap.c
-index 6dae2b4..35e6013 100644
+index 6dae2b4..59027a8 100644
 --- a/kern/trap.c
 +++ b/kern/trap.c
 @@ -73,12 +73,8 @@ void
@@ -600,9 +664,9 @@ index 6dae2b4..35e6013 100644
  	// Handle clock interrupts. Don't forget to acknowledge the
  	// interrupt using lapic_eoi() before calling the scheduler!
  	// LAB 4: Your code here.
-+	lapic_eoi();
 +	if (tf->tf_trapno >= IRQ_OFFSET && tf->tf_trapno < IRQ_OFFSET + 16)
 +	{
++		lapic_eoi();
 +		switch (tf->tf_trapno)
 +		{
 +		case IRQ_OFFSET + IRQ_TIMER:
@@ -827,6 +891,53 @@ index 61264da..3f19405 100644
  }
  
  // Challenge!
+diff --git a/lib/ipc.c b/lib/ipc.c
+index 2e222b9..e05a1e3 100644
+--- a/lib/ipc.c
++++ b/lib/ipc.c
+@@ -23,8 +23,23 @@ int32_t
+ ipc_recv(envid_t *from_env_store, void *pg, int *perm_store)
+ {
+ 	// LAB 4: Your code here.
+-	panic("ipc_recv not implemented");
+-	return 0;
++	int r = 0;
++	if (pg == NULL)
++		pg = (void *)UTOP;
++	if ((r = sys_ipc_recv(pg)) != 0)
++	{
++		if (from_env_store)
++			*from_env_store = 0;
++		if (perm_store)
++			*perm_store = 0;
++		return r;
++	}
++	if (from_env_store)
++		*from_env_store = thisenv->env_ipc_from;
++	if (perm_store)
++		*perm_store = thisenv->env_ipc_perm;
++
++	return thisenv->env_ipc_value;
+ }
+ 
+ // Send 'val' (and 'pg' with 'perm', if 'pg' is nonnull) to 'toenv'.
+@@ -39,7 +54,15 @@ void
+ ipc_send(envid_t to_env, uint32_t val, void *pg, int perm)
+ {
+ 	// LAB 4: Your code here.
+-	panic("ipc_send not implemented");
++	int r = 0;
++	if (pg == NULL)
++		pg = (void *)UTOP;
++	while ((r = sys_ipc_try_send(to_env, val, pg, perm)) != 0)
++	{
++		if (r != -E_IPC_NOT_RECV)
++			panic("sys_ipc_try_send, %e", r);
++		sys_yield();
++	}
+ }
+ 
+ // Find the first environment of the given type.  We'll use this to
 diff --git a/lib/pfentry.S b/lib/pfentry.S
 index f40aeeb..82919ac 100644
 --- a/lib/pfentry.S
@@ -885,7 +996,7 @@ index a975518..0cb1b33 100644
  
  	// Save handler pointer for assembly to call.
 diff --git a/lib/syscall.c b/lib/syscall.c
-index 3fa7936..198d53b 100644
+index 3fa7936..a121d55 100644
 --- a/lib/syscall.c
 +++ b/lib/syscall.c
 @@ -47,6 +47,8 @@ sysenter(int num, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4)
@@ -942,7 +1053,7 @@ index 3fa7936..198d53b 100644
  }
  
  // sys_exofork is inlined in lib.h
-@@ -120,13 +130,13 @@ sys_page_unmap(envid_t envid, void *va)
+@@ -120,24 +130,25 @@ sys_page_unmap(envid_t envid, void *va)
  int
  sys_env_set_status(envid_t envid, int status)
  {
@@ -958,6 +1069,19 @@ index 3fa7936..198d53b 100644
  }
  
  int
+ sys_ipc_try_send(envid_t envid, uint32_t value, void *srcva, int perm)
+ {
+-	return syscall(SYS_ipc_try_send, 0, envid, value, (uint32_t) srcva, perm, 0);
++	return sysenter(SYS_ipc_try_send, envid, value, (uint32_t) srcva, perm);
+ }
+ 
+ int
+ sys_ipc_recv(void *dstva)
+ {
++	// cannot use sysenter, because we need to access the trapframe
+ 	return syscall(SYS_ipc_recv, 1, (uint32_t)dstva, 0, 0, 0, 0);
+ }
+ 
 -- 
 2.11.0
 
