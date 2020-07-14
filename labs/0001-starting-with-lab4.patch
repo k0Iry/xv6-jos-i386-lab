@@ -1,4 +1,4 @@
-From 68822cfbf87a61c81f2e98a30e9697ce4332f710 Mon Sep 17 00:00:00 2001
+From 29fb9349c48c384c944ad668b96e5b1946d6cd98 Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Wed, 1 Jul 2020 19:51:32 +0000
 Subject: [PATCH] starting with lab4...
@@ -381,7 +381,7 @@ index f595bb1..b6cf2a4 100644
  		"hlt\n"
  		"jmp 1b\n"
 diff --git a/kern/syscall.c b/kern/syscall.c
-index 4e8145a..e90e974 100644
+index 4e8145a..f131f5c 100644
 --- a/kern/syscall.c
 +++ b/kern/syscall.c
 @@ -22,9 +22,11 @@ sys_cputs(const char *s, size_t len)
@@ -561,7 +561,7 @@ index 4e8145a..e90e974 100644
 +	curenv->env_ipc_dstva = dstva;	// tell sender if we want a page
 +
 +	// now we give up CPU
-+	curenv->env_status == ENV_NOT_RUNNABLE;
++	curenv->env_status = ENV_NOT_RUNNABLE;
 +	sched_yield();
 +
  	return 0;
