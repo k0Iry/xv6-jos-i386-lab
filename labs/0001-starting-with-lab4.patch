@@ -1,4 +1,4 @@
-From 29fb9349c48c384c944ad668b96e5b1946d6cd98 Mon Sep 17 00:00:00 2001
+From c0375fa272f084af2ffbc30c546fedb88a135617 Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Wed, 1 Jul 2020 19:51:32 +0000
 Subject: [PATCH] starting with lab4...
@@ -14,6 +14,9 @@ page_insert(), added some write-up
 finished clock interrupts handling
 
 adding ipc support
+correct round-robin algorithm
+
+lab4 finished (without challenges)
 ---
  inc/trap.h       |   5 ++
  kern/env.c       |  19 +++++---
@@ -22,16 +25,16 @@ adding ipc support
  kern/monitor.c   |   6 +++
  kern/mpentry.S   |  30 ++++++++++++
  kern/pmap.c      |  59 +++++++++++++++++++-----
- kern/sched.c     |  14 +++++-
- kern/syscall.c   | 137 ++++++++++++++++++++++++++++++++++++++++++++++++++-----
- kern/trap.c      |  81 +++++++++++++++++++++++++++-----
+ kern/sched.c     |  17 ++++++-
+ kern/syscall.c   | 136 +++++++++++++++++++++++++++++++++++++++++++++++++------
+ kern/trap.c      |  81 ++++++++++++++++++++++++++++-----
  kern/trapentry.S |  25 ++++++++++
  lib/fork.c       |  79 ++++++++++++++++++++++++++++++--
  lib/ipc.c        |  29 ++++++++++--
  lib/pfentry.S    |  18 ++++++++
  lib/pgfault.c    |   5 +-
  lib/syscall.c    |  25 +++++++---
- 16 files changed, 486 insertions(+), 61 deletions(-)
+ 16 files changed, 485 insertions(+), 64 deletions(-)
 
 diff --git a/inc/trap.h b/inc/trap.h
 index b36aae3..63ffd22 100644
@@ -349,19 +352,22 @@ index eb7d239..c2e22a7 100644
  			"va %08x\n", env->env_id, user_mem_check_addr);
  		env_destroy(env);	// may not return
 diff --git a/kern/sched.c b/kern/sched.c
-index f595bb1..b6cf2a4 100644
+index f595bb1..ab7f618 100644
 --- a/kern/sched.c
 +++ b/kern/sched.c
-@@ -29,6 +29,18 @@ sched_yield(void)
+@@ -29,6 +29,21 @@ sched_yield(void)
  	// below to halt the cpu.
  
  	// LAB 4: Your code here.
-+	int i = 0;
++	int i = 0, j = 0, k = 0;
++	if (curenv)
++		j = ENVX(curenv->env_id);
 +	for (; i < NENV; i++)
 +	{
-+		if (envs[i].env_status == ENV_RUNNABLE)
++		k = (i + j) % NENV;
++		if (envs[k].env_status == ENV_RUNNABLE)
 +		{
-+			env_run(&envs[i]);
++			env_run(&envs[k]);
 +		}
 +	}
 +	if (curenv != NULL && curenv->env_status == ENV_RUNNING)
@@ -371,7 +377,7 @@ index f595bb1..b6cf2a4 100644
  
  	// sched_halt never returns
  	sched_halt();
-@@ -75,7 +87,7 @@ sched_halt(void)
+@@ -75,7 +90,7 @@ sched_halt(void)
  		"pushl $0\n"
  		"pushl $0\n"
  		// Uncomment the following line after completing exercise 13
@@ -381,25 +387,24 @@ index f595bb1..b6cf2a4 100644
  		"hlt\n"
  		"jmp 1b\n"
 diff --git a/kern/syscall.c b/kern/syscall.c
-index 4e8145a..f131f5c 100644
+index 4e8145a..f19a51f 100644
 --- a/kern/syscall.c
 +++ b/kern/syscall.c
-@@ -22,9 +22,11 @@ sys_cputs(const char *s, size_t len)
+@@ -22,12 +22,7 @@ sys_cputs(const char *s, size_t len)
  	// Destroy the environment if not.
  
  	// LAB 3: Your code here.
 -	user_mem_assert(curenv, s, len, PTE_P);
 -	cprintf("Will write from address: 0x%08x to address: 0x%08x\n", s, s + len);
 -	if ((uint32_t)ROUNDUP(s, PGSIZE) != USTACKTOP || (uint32_t)ROUNDUP(s + len, PGSIZE) != USTACKTOP)
+-	{
+-		env_destroy(curenv);
+-	}
 +	user_mem_assert(curenv, s, len, PTE_U);
-+	// cprintf("Will write from address: 0x%08x to address: 0x%08x\n", s, s + len);
-+	int u_stackcheck = (uint32_t)ROUNDUP(s, PGSIZE) != USTACKTOP || (uint32_t)ROUNDUP(s + len, PGSIZE) != USTACKTOP;
-+	int ux_stackcheck = (uint32_t)ROUNDUP(s, PGSIZE) != UXSTACKTOP || (uint32_t)ROUNDUP(s + len, PGSIZE) != UXSTACKTOP;
-+	if (u_stackcheck && ux_stackcheck)
- 	{
- 		env_destroy(curenv);
- 	}
-@@ -90,7 +92,15 @@ sys_exofork(void)
+ 
+ 	// Print the string supplied by the user.
+ 	cprintf("%.*s", len, s);
+@@ -90,7 +85,15 @@ sys_exofork(void)
  	// will appear to return 0.
  
  	// LAB 4: Your code here.
@@ -416,7 +421,7 @@ index 4e8145a..f131f5c 100644
  }
  
  // Set envid's env_status to status, which must be ENV_RUNNABLE
-@@ -110,7 +120,16 @@ sys_env_set_status(envid_t envid, int status)
+@@ -110,7 +113,16 @@ sys_env_set_status(envid_t envid, int status)
  	// envid's status.
  
  	// LAB 4: Your code here.
@@ -434,7 +439,7 @@ index 4e8145a..f131f5c 100644
  }
  
  // Set the page fault upcall for 'envid' by modifying the corresponding struct
-@@ -125,7 +144,11 @@ static int
+@@ -125,7 +137,11 @@ static int
  sys_env_set_pgfault_upcall(envid_t envid, void *func)
  {
  	// LAB 4: Your code here.
@@ -447,7 +452,7 @@ index 4e8145a..f131f5c 100644
  }
  
  // Allocate a page of memory and map it at 'va' with permission
-@@ -155,7 +178,24 @@ sys_page_alloc(envid_t envid, void *va, int perm)
+@@ -155,7 +171,24 @@ sys_page_alloc(envid_t envid, void *va, int perm)
  	//   allocated!
  
  	// LAB 4: Your code here.
@@ -473,7 +478,7 @@ index 4e8145a..f131f5c 100644
  }
  
  // Map the page of memory at 'srcva' in srcenvid's address space
-@@ -184,9 +224,19 @@ sys_page_map(envid_t srcenvid, void *srcva,
+@@ -184,9 +217,19 @@ sys_page_map(envid_t srcenvid, void *srcva,
  	//   parameters for correctness.
  	//   Use the third argument to page_lookup() to
  	//   check the current permissions on the page.
@@ -495,7 +500,7 @@ index 4e8145a..f131f5c 100644
  }
  
  // Unmap the page of memory at 'va' in the address space of 'envid'.
-@@ -202,7 +252,13 @@ sys_page_unmap(envid_t envid, void *va)
+@@ -202,7 +245,13 @@ sys_page_unmap(envid_t envid, void *va)
  	// Hint: This function is a wrapper around page_remove().
  
  	// LAB 4: Your code here.
@@ -510,7 +515,7 @@ index 4e8145a..f131f5c 100644
  }
  
  // Try to send 'value' to the target env 'envid'.
-@@ -247,7 +303,38 @@ static int
+@@ -247,7 +296,38 @@ static int
  sys_ipc_try_send(envid_t envid, uint32_t value, void *srcva, unsigned perm)
  {
  	// LAB 4: Your code here.
@@ -550,7 +555,7 @@ index 4e8145a..f131f5c 100644
  }
  
  // Block until a value is ready.  Record that you want to receive
-@@ -265,7 +352,15 @@ static int
+@@ -265,7 +345,15 @@ static int
  sys_ipc_recv(void *dstva)
  {
  	// LAB 4: Your code here.
@@ -567,7 +572,7 @@ index 4e8145a..f131f5c 100644
  	return 0;
  }
  
-@@ -289,6 +384,24 @@ syscall(uint32_t syscallno, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4,
+@@ -289,6 +377,24 @@ syscall(uint32_t syscallno, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4,
  		return sys_getenvid();
  	case SYS_env_destroy:
  		return sys_env_destroy(a1);
