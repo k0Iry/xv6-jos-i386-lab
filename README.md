@@ -141,7 +141,7 @@ Score: 80/80
 ## LAB 4:
 
 ```
-root@299fd584d848:/usr/src/app/lab# make grade
+root@c32df0e58761:/usr/src/app/lab# make grade
 make clean
 make[1]: Entering directory '/usr/src/app/lab'
 rm -rf obj .gdbinit jos.in qemu.log
@@ -255,20 +255,29 @@ ar: creating obj/lib/libjos.a
 boot block is 415 bytes (max 510)
 + mk obj/kern/kernel.img
 make[1]: Leaving directory '/usr/src/app/lab'
-dumbfork: OK (17.2s) 
+dumbfork: OK (13.3s) 
 Part A score: 5/5
 
-faultread: OK (14.6s) 
-faultwrite: OK (16.6s) 
-faultdie: OK (15.2s) 
-faultregs: OK (15.9s) 
-faultalloc: OK (18.5s) 
-faultallocbad: OK (17.4s) 
-faultnostack: OK (16.3s) 
-faultbadhandler: OK (15.6s) 
-faultevilhandler: OK (15.4s) 
-forktree: OK (15.7s) 
+faultread: OK (12.8s) 
+faultwrite: OK (11.9s) 
+faultdie: OK (10.6s) 
+faultregs: OK (10.8s) 
+faultalloc: OK (10.7s) 
+faultallocbad: OK (12.9s) 
+faultnostack: OK (11.7s) 
+faultbadhandler: OK (11.9s) 
+faultevilhandler: OK (10.6s) 
+forktree: OK (13.2s) 
 Part B score: 50/50
+
+spin: OK (13.1s) 
+stresssched: OK (12.3s) 
+sendpage: OK (11.2s) 
+pingpong: OK (9.7s) 
+primes: OK (13.3s) 
+Part C score: 25/25
+
+Score: 80/80
 ```
 
 
