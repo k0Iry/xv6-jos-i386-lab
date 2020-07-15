@@ -1,22 +1,10 @@
-From c0375fa272f084af2ffbc30c546fedb88a135617 Mon Sep 17 00:00:00 2001
+From f1757d48cb12396fb639459047aaa179f0a9b036 Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Wed, 1 Jul 2020 19:51:32 +0000
-Subject: [PATCH] starting with lab4...
-
-finish Per-CPU State and Initialization, other than
-ts_iomb initialization
-
-Part A finished
-Part B finished
-
-in region_alloc, be careful the map way, should be using the
-page_insert(), added some write-up
-finished clock interrupts handling
+Subject: [PATCH] lab4 finished (without challenges)
 
 adding ipc support
 correct round-robin algorithm
-
-lab4 finished (without challenges)
 ---
  inc/trap.h       |   5 ++
  kern/env.c       |  19 +++++---
@@ -25,7 +13,7 @@ lab4 finished (without challenges)
  kern/monitor.c   |   6 +++
  kern/mpentry.S   |  30 ++++++++++++
  kern/pmap.c      |  59 +++++++++++++++++++-----
- kern/sched.c     |  17 ++++++-
+ kern/sched.c     |  18 +++++++-
  kern/syscall.c   | 136 +++++++++++++++++++++++++++++++++++++++++++++++++------
  kern/trap.c      |  81 ++++++++++++++++++++++++++++-----
  kern/trapentry.S |  25 ++++++++++
@@ -34,7 +22,7 @@ lab4 finished (without challenges)
  lib/pfentry.S    |  18 ++++++++
  lib/pgfault.c    |   5 +-
  lib/syscall.c    |  25 +++++++---
- 16 files changed, 485 insertions(+), 64 deletions(-)
+ 16 files changed, 486 insertions(+), 64 deletions(-)
 
 diff --git a/inc/trap.h b/inc/trap.h
 index b36aae3..63ffd22 100644
@@ -352,19 +340,27 @@ index eb7d239..c2e22a7 100644
  			"va %08x\n", env->env_id, user_mem_check_addr);
  		env_destroy(env);	// may not return
 diff --git a/kern/sched.c b/kern/sched.c
-index f595bb1..ab7f618 100644
+index f595bb1..9e464d7 100644
 --- a/kern/sched.c
 +++ b/kern/sched.c
-@@ -29,6 +29,21 @@ sched_yield(void)
+@@ -14,6 +14,7 @@ sched_yield(void)
+ 	struct Env *idle;
+ 
+ 	// Implement simple round-robin scheduling.
++	// https://www.geeksforgeeks.org/program-round-robin-scheduling-set-1/
+ 	//
+ 	// Search through 'envs' for an ENV_RUNNABLE environment in
+ 	// circular fashion starting just after the env this CPU was
+@@ -29,6 +30,21 @@ sched_yield(void)
  	// below to halt the cpu.
  
  	// LAB 4: Your code here.
-+	int i = 0, j = 0, k = 0;
++	int i = 0, curpos = 0, k = 0;
 +	if (curenv)
-+		j = ENVX(curenv->env_id);
++		curpos = ENVX(curenv->env_id);
 +	for (; i < NENV; i++)
 +	{
-+		k = (i + j) % NENV;
++		k = (i + curpos) % NENV;		// in a circular way
 +		if (envs[k].env_status == ENV_RUNNABLE)
 +		{
 +			env_run(&envs[k]);
@@ -377,7 +373,7 @@ index f595bb1..ab7f618 100644
  
  	// sched_halt never returns
  	sched_halt();
-@@ -75,7 +90,7 @@ sched_halt(void)
+@@ -75,7 +91,7 @@ sched_halt(void)
  		"pushl $0\n"
  		"pushl $0\n"
  		// Uncomment the following line after completing exercise 13
