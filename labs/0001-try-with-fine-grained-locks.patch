@@ -1,0 +1,277 @@
+From b57ff64afc63609edded5962b06de88ec92fa3e8 Mon Sep 17 00:00:00 2001
+From: Aaron <kljsandjb@me.com>
+Date: Thu, 16 Jul 2020 12:55:29 +0000
+Subject: [PATCH] try with fine-grained locks..
+
+adding lock for:
+1. page allocator
+2. scheduler
+3. console
+4. ipc state
+---
+ kern/env.c       |  2 +-
+ kern/init.c      |  5 ++---
+ kern/pmap.c      |  6 ++++++
+ kern/sched.c     |  4 ++--
+ kern/spinlock.c  | 21 +++++++++++++++++++++
+ kern/spinlock.h  | 11 +++++++++++
+ kern/syscall.c   |  3 +++
+ kern/trap.c      |  4 ++--
+ kern/trapentry.S | 30 +++++++++++++++---------------
+ 9 files changed, 63 insertions(+), 23 deletions(-)
+
+diff --git a/kern/env.c b/kern/env.c
+index e1019da..76d9963 100644
+--- a/kern/env.c
++++ b/kern/env.c
+@@ -557,7 +557,7 @@ env_run(struct Env *e)
+ 	curenv->env_runs ++;
+ 
+ 	lcr3(PADDR(curenv->env_pgdir));
+-	unlock_kernel();
++	UNLOCK(sched);
+ 	env_pop_tf(&(curenv->env_tf));
+ }
+ 
+diff --git a/kern/init.c b/kern/init.c
+index 0a0faaa..509ad5f 100644
+--- a/kern/init.c
++++ b/kern/init.c
+@@ -43,7 +43,7 @@ i386_init(void)
+ 
+ 	// Acquire the big kernel lock before waking up APs
+ 	// Your code here:
+-	lock_kernel();
++	LOCK(sched);
+ 
+ 	// Starting non-boot CPUs
+ 	boot_aps();
+@@ -62,7 +62,7 @@ i386_init(void)
+ 	ENV_CREATE(user_yield, ENV_TYPE_USER);
+ 	ENV_CREATE(user_yield, ENV_TYPE_USER);
+ #endif // TEST*
+-
++	UNLOCK(sched);	// tasks are all ready
+ 	// Schedule and run the first user environment!
+ 	sched_yield();
+ }
+@@ -117,7 +117,6 @@ mp_main(void)
+ 	// only one CPU can enter the scheduler at a time!
+ 	//
+ 	// Your code here:
+-	lock_kernel();
+ 	sched_yield();
+ 
+ 	// Remove this after you finish Exercise 6
+diff --git a/kern/pmap.c b/kern/pmap.c
+index c2e22a7..bb1ad5c 100644
+--- a/kern/pmap.c
++++ b/kern/pmap.c
+@@ -10,6 +10,7 @@
+ #include <kern/kclock.h>
+ #include <kern/env.h>
+ #include <kern/cpu.h>
++#include <kern/spinlock.h>
+ 
+ // These variables are set by i386_detect_memory()
+ size_t npages;			// Amount of physical memory (in pages)
+@@ -387,14 +388,17 @@ struct PageInfo *
+ page_alloc(int alloc_flags)
+ {
+ 	// Fill this function in
++	LOCK(page);
+ 	if (page_free_list == NULL)
+ 	{
++		UNLOCK(page);
+ 		return NULL;
+ 	}
+ 
+ 	struct PageInfo *alloc_page;
+ 	alloc_page = page_free_list;
+ 	page_free_list = page_free_list->pp_link;
++	UNLOCK(page);
+ 	alloc_page->pp_link = NULL;
+ 
+ 	if (alloc_flags & ALLOC_ZERO)
+@@ -423,8 +427,10 @@ page_free(struct PageInfo *pp)
+ 	{
+ 		panic("Page is still in use! Cannot be freed");
+ 	}
++	LOCK(page);
+ 	pp->pp_link = page_free_list;
+ 	page_free_list = pp;
++	UNLOCK(page);
+ }
+ 
+ //
+diff --git a/kern/sched.c b/kern/sched.c
+index 9e464d7..4ac40ae 100644
+--- a/kern/sched.c
++++ b/kern/sched.c
+@@ -11,7 +11,7 @@ void sched_halt(void);
+ void
+ sched_yield(void)
+ {
+-	struct Env *idle;
++	LOCK(sched);
+ 
+ 	// Implement simple round-robin scheduling.
+ 	// https://www.geeksforgeeks.org/program-round-robin-scheduling-set-1/
+@@ -82,7 +82,7 @@ sched_halt(void)
+ 	xchg(&thiscpu->cpu_status, CPU_HALTED);
+ 
+ 	// Release the big kernel lock as if we were "leaving" the kernel
+-	unlock_kernel();
++	UNLOCK(sched);
+ 
+ 	// Reset stack pointer, enable interrupts and then halt.
+ 	asm volatile (
+diff --git a/kern/spinlock.c b/kern/spinlock.c
+index bf4d2d2..b3b87c0 100644
+--- a/kern/spinlock.c
++++ b/kern/spinlock.c
+@@ -16,6 +16,27 @@ struct spinlock kernel_lock = {
+ #endif
+ };
+ 
++// memory allocation lock (alloc, free)
++struct spinlock page_lock = {
++#ifdef DEBUG_SPINLOCK
++	.name = "page_lock"
++#endif
++};
++
++// scheduler lock
++struct spinlock sched_lock = {
++#ifdef DEBUG_SPINLOCK
++	.name = "sched_lock"
++#endif
++};
++
++// scheduler lock
++struct spinlock cons_lock = {
++#ifdef DEBUG_SPINLOCK
++	.name = "cons_lock"
++#endif
++};
++
+ #ifdef DEBUG_SPINLOCK
+ // Record the current call stack in pcs[] by following the %ebp chain.
+ static void
+diff --git a/kern/spinlock.h b/kern/spinlock.h
+index 52d20b4..843db2f 100644
+--- a/kern/spinlock.h
++++ b/kern/spinlock.h
+@@ -26,6 +26,17 @@ void spin_unlock(struct spinlock *lk);
+ #define spin_initlock(lock)   __spin_initlock(lock, #lock)
+ 
+ extern struct spinlock kernel_lock;
++extern struct spinlock page_lock;
++extern struct spinlock sched_lock;
++extern struct spinlock cons_lock;
++
++#define CAT(x, y) x ## y
++#define LOCK(type) spin_lock(&CAT(type, _lock))
++#define UNLOCK(type) \
++	do {			\
++		spin_unlock(&CAT(type, _lock)); \
++		asm volatile("pause");		\
++	} while (0)
+ 
+ static inline void
+ lock_kernel(void)
+diff --git a/kern/syscall.c b/kern/syscall.c
+index f19a51f..f61dce6 100644
+--- a/kern/syscall.c
++++ b/kern/syscall.c
+@@ -11,6 +11,7 @@
+ #include <kern/syscall.h>
+ #include <kern/console.h>
+ #include <kern/sched.h>
++#include <kern/spinlock.h>
+ 
+ // Print a string to the system console.
+ // The string is exactly 'len' characters long.
+@@ -25,7 +26,9 @@ sys_cputs(const char *s, size_t len)
+ 	user_mem_assert(curenv, s, len, PTE_U);
+ 
+ 	// Print the string supplied by the user.
++	LOCK(cons);
+ 	cprintf("%.*s", len, s);
++	UNLOCK(cons);
+ }
+ 
+ // Read a character from the system console without blocking.
+diff --git a/kern/trap.c b/kern/trap.c
+index 59027a8..54657a0 100644
+--- a/kern/trap.c
++++ b/kern/trap.c
+@@ -276,7 +276,7 @@ trap(struct Trapframe *tf)
+ 	// Re-acqurie the big kernel lock if we were halted in
+ 	// sched_yield()
+ 	if (xchg(&thiscpu->cpu_status, CPU_STARTED) == CPU_HALTED)
+-		lock_kernel();
++		UNLOCK(sched);
+ 	// Check that interrupts are disabled.  If this assertion
+ 	// fails, DO NOT be tempted to fix it by inserting a "cli" in
+ 	// the interrupt path.
+@@ -287,7 +287,7 @@ trap(struct Trapframe *tf)
+ 		// Acquire the big kernel lock before doing any
+ 		// serious kernel work.
+ 		// LAB 4: Your code here.
+-		lock_kernel();
++		// lock_kernel();
+ 
+ 		// Question 2: Why do we still need separate kernel stacks for each CPU?
+ 		// Answer: 
+diff --git a/kern/trapentry.S b/kern/trapentry.S
+index aa6bd00..039cc94 100644
+--- a/kern/trapentry.S
++++ b/kern/trapentry.S
+@@ -60,15 +60,15 @@ default_handlers:
+ # (about popf) The I/O privilege level is altered only when executing at privilege level 0. 
+ # The interrupt flag is altered only when executing at a level at least as privileged as the I/O privilege level.
+ sysenter_handler:
+-pushl %ecx
+-pushl %edx
+-pushl %eax
+-pushl $kernel_lock
+-call spin_lock
+-addl $4, %esp
+-popl %eax
+-popl %edx
+-popl %ecx
++# pushl %ecx
++# pushl %edx
++# pushl %eax
++# pushl $kernel_lock
++# call spin_lock
++# addl $4, %esp
++# popl %eax
++# popl %edx
++# popl %ecx
+ 
+ pushl %edi
+ pushl %ebx
+@@ -81,12 +81,12 @@ call syscall
+ # movl $0, %edx
+ # movl $(GD_UT), %eax	/* no need, because of continuity, GD_UT will be found by adding 16(0x10) to GD_KT */
+ # wrmsr
+-pushl %eax
+-pushl $kernel_lock
+-call spin_unlock
+-pause
+-addl $4, %esp
+-popl %eax
++# pushl %eax
++# pushl $kernel_lock
++# call spin_unlock
++# pause
++# addl $4, %esp
++# popl %eax
+ 
+ movl %esi, %edx
+ movl %ebp, %ecx
+-- 
+2.11.0
+
