@@ -1,4 +1,4 @@
-From b57ff64afc63609edded5962b06de88ec92fa3e8 Mon Sep 17 00:00:00 2001
+From 3be4fd5805f1110c99c30987160014419ee1c957 Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Thu, 16 Jul 2020 12:55:29 +0000
 Subject: [PATCH] try with fine-grained locks..
@@ -16,9 +16,9 @@ adding lock for:
  kern/spinlock.c  | 21 +++++++++++++++++++++
  kern/spinlock.h  | 11 +++++++++++
  kern/syscall.c   |  3 +++
- kern/trap.c      |  4 ++--
+ kern/trap.c      |  7 ++++---
  kern/trapentry.S | 30 +++++++++++++++---------------
- 9 files changed, 63 insertions(+), 23 deletions(-)
+ 9 files changed, 65 insertions(+), 24 deletions(-)
 
 diff --git a/kern/env.c b/kern/env.c
 index e1019da..76d9963 100644
@@ -34,7 +34,7 @@ index e1019da..76d9963 100644
  }
  
 diff --git a/kern/init.c b/kern/init.c
-index 0a0faaa..509ad5f 100644
+index 0a0faaa..b551aaf 100644
 --- a/kern/init.c
 +++ b/kern/init.c
 @@ -43,7 +43,7 @@ i386_init(void)
@@ -51,7 +51,7 @@ index 0a0faaa..509ad5f 100644
  	ENV_CREATE(user_yield, ENV_TYPE_USER);
  #endif // TEST*
 -
-+	UNLOCK(sched);	// tasks are all ready
++	UNLOCK(sched);	// tasks are all ready, now start scheduling
  	// Schedule and run the first user environment!
  	sched_yield();
  }
@@ -203,19 +203,22 @@ index f19a51f..f61dce6 100644
  
  // Read a character from the system console without blocking.
 diff --git a/kern/trap.c b/kern/trap.c
-index 59027a8..54657a0 100644
+index 59027a8..8d2bdb5 100644
 --- a/kern/trap.c
 +++ b/kern/trap.c
-@@ -276,7 +276,7 @@ trap(struct Trapframe *tf)
+@@ -275,8 +275,9 @@ trap(struct Trapframe *tf)
+ 
  	// Re-acqurie the big kernel lock if we were halted in
  	// sched_yield()
- 	if (xchg(&thiscpu->cpu_status, CPU_STARTED) == CPU_HALTED)
+-	if (xchg(&thiscpu->cpu_status, CPU_STARTED) == CPU_HALTED)
 -		lock_kernel();
-+		UNLOCK(sched);
++	if (thiscpu->cpu_status == CPU_HALTED)
++		xchg(&thiscpu->cpu_status, CPU_STARTED);
++		// LOCK(sched);
  	// Check that interrupts are disabled.  If this assertion
  	// fails, DO NOT be tempted to fix it by inserting a "cli" in
  	// the interrupt path.
-@@ -287,7 +287,7 @@ trap(struct Trapframe *tf)
+@@ -287,7 +288,7 @@ trap(struct Trapframe *tf)
  		// Acquire the big kernel lock before doing any
  		// serious kernel work.
  		// LAB 4: Your code here.
