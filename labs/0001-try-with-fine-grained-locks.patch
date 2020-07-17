@@ -1,4 +1,4 @@
-From 3be4fd5805f1110c99c30987160014419ee1c957 Mon Sep 17 00:00:00 2001
+From 3d08b0ec12a50fec6fa5299e0e06fa18b2c29a8c Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Thu, 16 Jul 2020 12:55:29 +0000
 Subject: [PATCH] try with fine-grained locks..
@@ -16,9 +16,9 @@ adding lock for:
  kern/spinlock.c  | 21 +++++++++++++++++++++
  kern/spinlock.h  | 11 +++++++++++
  kern/syscall.c   |  3 +++
- kern/trap.c      |  7 ++++---
+ kern/trap.c      | 11 ++++++++---
  kern/trapentry.S | 30 +++++++++++++++---------------
- 9 files changed, 65 insertions(+), 24 deletions(-)
+ 9 files changed, 69 insertions(+), 24 deletions(-)
 
 diff --git a/kern/env.c b/kern/env.c
 index e1019da..76d9963 100644
@@ -203,7 +203,7 @@ index f19a51f..f61dce6 100644
  
  // Read a character from the system console without blocking.
 diff --git a/kern/trap.c b/kern/trap.c
-index 59027a8..8d2bdb5 100644
+index 59027a8..4a78b59 100644
 --- a/kern/trap.c
 +++ b/kern/trap.c
 @@ -275,8 +275,9 @@ trap(struct Trapframe *tf)
@@ -227,6 +227,25 @@ index 59027a8..8d2bdb5 100644
  
  		// Question 2: Why do we still need separate kernel stacks for each CPU?
  		// Answer: 
+@@ -324,7 +325,10 @@ trap(struct Trapframe *tf)
+ 	// scheduled, so we should return to the current environment
+ 	// if doing so makes sense.
+ 	if (curenv && curenv->env_status == ENV_RUNNING)
++	{
++		LOCK(sched);
+ 		env_run(curenv);
++	}
+ 	else
+ 		sched_yield();
+ }
+@@ -408,6 +412,7 @@ page_fault_handler(struct Trapframe *tf)
+ 
+ 	tf->tf_esp = (uintptr_t)&utf->utf_fault_va;
+ 	tf->tf_eip = (uintptr_t)curenv->env_pgfault_upcall;
++	LOCK(sched);
+ 	env_run(curenv);
+ end:
+ 	// Destroy the environment that caused the fault.
 diff --git a/kern/trapentry.S b/kern/trapentry.S
 index aa6bd00..039cc94 100644
 --- a/kern/trapentry.S
