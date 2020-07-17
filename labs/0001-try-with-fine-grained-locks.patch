@@ -1,4 +1,4 @@
-From 3d08b0ec12a50fec6fa5299e0e06fa18b2c29a8c Mon Sep 17 00:00:00 2001
+From 8f346faa49b3d15e0d3f10315a4698029e0bf67c Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Thu, 16 Jul 2020 12:55:29 +0000
 Subject: [PATCH] try with fine-grained locks..
@@ -8,23 +8,37 @@ adding lock for:
 2. scheduler
 3. console
 4. ipc state
+
+haven't checked IPC lock, but it looks good now,
+run once and got 80/80, will re-run several times
 ---
- kern/env.c       |  2 +-
+ kern/env.c       |  4 +++-
  kern/init.c      |  5 ++---
  kern/pmap.c      |  6 ++++++
  kern/sched.c     |  4 ++--
- kern/spinlock.c  | 21 +++++++++++++++++++++
- kern/spinlock.h  | 11 +++++++++++
- kern/syscall.c   |  3 +++
+ kern/spinlock.c  | 28 ++++++++++++++++++++++++++++
+ kern/spinlock.h  | 50 +++++++++++++++++++++++++++++++-------------------
+ kern/syscall.c   |  8 ++++++++
  kern/trap.c      | 11 ++++++++---
  kern/trapentry.S | 30 +++++++++++++++---------------
- 9 files changed, 69 insertions(+), 24 deletions(-)
+ 9 files changed, 103 insertions(+), 43 deletions(-)
 
 diff --git a/kern/env.c b/kern/env.c
-index e1019da..76d9963 100644
+index e1019da..db04e3d 100644
 --- a/kern/env.c
 +++ b/kern/env.c
-@@ -557,7 +557,7 @@ env_run(struct Env *e)
+@@ -468,8 +468,10 @@ env_free(struct Env *e)
+ 
+ 	// return the environment to the free list
+ 	e->env_status = ENV_FREE;
++	LOCK(env);
+ 	e->env_link = env_free_list;
+ 	env_free_list = e;
++	UNLOCK(env);
+ }
+ 
+ //
+@@ -557,7 +559,7 @@ env_run(struct Env *e)
  	curenv->env_runs ++;
  
  	lcr3(PADDR(curenv->env_pgdir));
@@ -127,10 +141,10 @@ index 9e464d7..4ac40ae 100644
  	// Reset stack pointer, enable interrupts and then halt.
  	asm volatile (
 diff --git a/kern/spinlock.c b/kern/spinlock.c
-index bf4d2d2..b3b87c0 100644
+index bf4d2d2..c6458e8 100644
 --- a/kern/spinlock.c
 +++ b/kern/spinlock.c
-@@ -16,6 +16,27 @@ struct spinlock kernel_lock = {
+@@ -16,6 +16,34 @@ struct spinlock kernel_lock = {
  #endif
  };
  
@@ -155,20 +169,48 @@ index bf4d2d2..b3b87c0 100644
 +#endif
 +};
 +
++// env list lock
++struct spinlock env_lock = {
++#ifdef DEBUG_SPINLOCK
++	.name = "env_lock"
++#endif
++};
++
  #ifdef DEBUG_SPINLOCK
  // Record the current call stack in pcs[] by following the %ebp chain.
  static void
 diff --git a/kern/spinlock.h b/kern/spinlock.h
-index 52d20b4..843db2f 100644
+index 52d20b4..37a77e5 100644
 --- a/kern/spinlock.h
 +++ b/kern/spinlock.h
-@@ -26,6 +26,17 @@ void spin_unlock(struct spinlock *lk);
+@@ -25,24 +25,36 @@ void spin_unlock(struct spinlock *lk);
+ 
  #define spin_initlock(lock)   __spin_initlock(lock, #lock)
  
- extern struct spinlock kernel_lock;
+-extern struct spinlock kernel_lock;
+-
+-static inline void
+-lock_kernel(void)
+-{
+-	spin_lock(&kernel_lock);
+-}
+-
+-static inline void
+-unlock_kernel(void)
+-{
+-	spin_unlock(&kernel_lock);
+-
+-	// Normally we wouldn't need to do this, but QEMU only runs
+-	// one CPU at a time and has a long time-slice.  Without the
+-	// pause, this CPU is likely to reacquire the lock before
+-	// another CPU has even been given a chance to acquire it.
+-	asm volatile("pause");
+-}
++// extern struct spinlock kernel_lock;
 +extern struct spinlock page_lock;
 +extern struct spinlock sched_lock;
 +extern struct spinlock cons_lock;
++extern struct spinlock env_lock;
 +
 +#define CAT(x, y) x ## y
 +#define LOCK(type) spin_lock(&CAT(type, _lock))
@@ -177,11 +219,28 @@ index 52d20b4..843db2f 100644
 +		spin_unlock(&CAT(type, _lock)); \
 +		asm volatile("pause");		\
 +	} while (0)
++
++// static inline void
++// lock_kernel(void)
++// {
++// 	spin_lock(&kernel_lock);
++// }
++
++// static inline void
++// unlock_kernel(void)
++// {
++// 	spin_unlock(&kernel_lock);
++
++// 	// Normally we wouldn't need to do this, but QEMU only runs
++// 	// one CPU at a time and has a long time-slice.  Without the
++// 	// pause, this CPU is likely to reacquire the lock before
++// 	// another CPU has even been given a chance to acquire it.
++// 	asm volatile("pause");
++// }
  
- static inline void
- lock_kernel(void)
+ #endif
 diff --git a/kern/syscall.c b/kern/syscall.c
-index f19a51f..f61dce6 100644
+index f19a51f..07f4986 100644
 --- a/kern/syscall.c
 +++ b/kern/syscall.c
 @@ -11,6 +11,7 @@
@@ -202,6 +261,21 @@ index f19a51f..f61dce6 100644
  }
  
  // Read a character from the system console without blocking.
+@@ -87,9 +90,14 @@ sys_exofork(void)
+ 	// LAB 4: Your code here.
+ 	struct Env *child = NULL;
+ 	int ret = 0;
++	LOCK(sched);
++	// becasue env_alloc() would by default set new env's status
++	// to ENV_RUNNABLE, there would be a race condition in sched_yield()
++	// since kernel is lock-free now
+ 	if ((ret = env_alloc(&child, curenv->env_id)) != 0)
+ 		return ret;
+ 	child->env_status = ENV_NOT_RUNNABLE;
++	UNLOCK(sched);
+ 	child->env_tf = curenv->env_tf;
+ 	child->env_tf.tf_regs.reg_eax = 0;
+ 
 diff --git a/kern/trap.c b/kern/trap.c
 index 59027a8..4a78b59 100644
 --- a/kern/trap.c
