@@ -1,6 +1,6 @@
-From f969d8a7c0de0943848366fd73861acf551f8b3b Mon Sep 17 00:00:00 2001
+From 2ed77e7f198f19ba1d14d1d963ec0b1ff7b0a46a Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
-Date: Thu, 16 Jul 2020 12:55:29 +0000
+Date: Fri, 17 Jul 2020 23:37:08 +0000
 Subject: [PATCH] try with fine-grained locks..
 
 adding lock for:
@@ -8,22 +8,19 @@ adding lock for:
 2. scheduler
 3. console
 4. ipc state
-
-haven't checked IPC lock, but it looks good now,
-run once and got 80/80, will re-run several times
 ---
  inc/env.h        |  1 +
  kern/env.c       | 20 ++++++++++++++++----
- kern/init.c      |  5 ++---
+ kern/init.c      | 12 ++----------
  kern/monitor.c   |  6 ------
  kern/pmap.c      |  6 ++++++
- kern/sched.c     |  4 ++--
+ kern/sched.c     |  6 +++---
  kern/spinlock.c  | 34 +++++++++++++++++++++++++++++++---
- kern/spinlock.h  | 50 +++++++++++++++++++++++++++++++-------------------
- kern/syscall.c   |  3 +++
- kern/trap.c      | 11 ++++++++---
+ kern/spinlock.h  | 38 +++++++++++++++++++-------------------
+ kern/syscall.c   | 18 ++++++++++++++----
+ kern/trap.c      | 12 +++++++-----
  kern/trapentry.S | 30 +++++++++++++++---------------
- 11 files changed, 115 insertions(+), 55 deletions(-)
+ 11 files changed, 114 insertions(+), 69 deletions(-)
 
 diff --git a/inc/env.h b/inc/env.h
 index b04f1a3..13df7de 100644
@@ -112,28 +109,35 @@ index e1019da..103c241 100644
  }
  
 diff --git a/kern/init.c b/kern/init.c
-index 0a0faaa..b551aaf 100644
+index 0a0faaa..0b77d26 100644
 --- a/kern/init.c
 +++ b/kern/init.c
-@@ -43,7 +43,7 @@ i386_init(void)
+@@ -41,13 +41,6 @@ i386_init(void)
+ 	// Lab 4 multitasking initialization functions
+ 	pic_init();
  
- 	// Acquire the big kernel lock before waking up APs
- 	// Your code here:
+-	// Acquire the big kernel lock before waking up APs
+-	// Your code here:
 -	lock_kernel();
-+	LOCK(sched);
- 
- 	// Starting non-boot CPUs
- 	boot_aps();
-@@ -62,7 +62,7 @@ i386_init(void)
+-
+-	// Starting non-boot CPUs
+-	boot_aps();
+-
+ #if defined(TEST)
+ 	// Don't touch -- used by grading script!
+ 	ENV_CREATE(TEST, ENV_TYPE_USER);
+@@ -62,8 +55,8 @@ i386_init(void)
  	ENV_CREATE(user_yield, ENV_TYPE_USER);
  	ENV_CREATE(user_yield, ENV_TYPE_USER);
  #endif // TEST*
 -
-+	UNLOCK(sched);	// tasks are all ready, now start scheduling
- 	// Schedule and run the first user environment!
+-	// Schedule and run the first user environment!
++	// tasks are all ready, now boot application cpus and start scheduling
++	boot_aps();
  	sched_yield();
  }
-@@ -117,7 +117,6 @@ mp_main(void)
+ 
+@@ -117,7 +110,6 @@ mp_main(void)
  	// only one CPU can enter the scheduler at a time!
  	//
  	// Your code here:
@@ -208,18 +212,34 @@ index c2e22a7..bb1ad5c 100644
  
  //
 diff --git a/kern/sched.c b/kern/sched.c
-index 9e464d7..4ac40ae 100644
+index 9e464d7..a7aab22 100644
 --- a/kern/sched.c
 +++ b/kern/sched.c
-@@ -11,7 +11,7 @@ void sched_halt(void);
+@@ -11,8 +11,6 @@ void sched_halt(void);
  void
  sched_yield(void)
  {
 -	struct Env *idle;
-+	LOCK(sched);
- 
+-
  	// Implement simple round-robin scheduling.
  	// https://www.geeksforgeeks.org/program-round-robin-scheduling-set-1/
+ 	//
+@@ -33,6 +31,7 @@ sched_yield(void)
+ 	int i = 0, curpos = 0, k = 0;
+ 	if (curenv)
+ 		curpos = ENVX(curenv->env_id);
++	LOCK(sched);
+ 	for (; i < NENV; i++)
+ 	{
+ 		k = (i + curpos) % NENV;		// in a circular way
+@@ -67,6 +66,7 @@ sched_halt(void)
+ 			break;
+ 	}
+ 	if (i == NENV) {
++		// if we are here, we still hold the scheduler lock
+ 		cprintf("No runnable environments in the system!\n");
+ 		while (1)
+ 			monitor(NULL);
 @@ -82,7 +82,7 @@ sched_halt(void)
  	xchg(&thiscpu->cpu_status, CPU_HALTED);
  
@@ -230,7 +250,7 @@ index 9e464d7..4ac40ae 100644
  	// Reset stack pointer, enable interrupts and then halt.
  	asm volatile (
 diff --git a/kern/spinlock.c b/kern/spinlock.c
-index bf4d2d2..49d36e5 100644
+index bf4d2d2..a350ba1 100644
 --- a/kern/spinlock.c
 +++ b/kern/spinlock.c
 @@ -9,10 +9,38 @@
@@ -239,21 +259,15 @@ index bf4d2d2..49d36e5 100644
  
 -// The big kernel lock
 -struct spinlock kernel_lock = {
-+// The big kernel lock (Now we drop it!)
-+// struct spinlock kernel_lock = {
-+// #ifdef DEBUG_SPINLOCK
-+// 	.name = "kernel_lock"
-+// #endif
-+// };
-+
 +// memory allocation lock (alloc, free)
 +struct spinlock page_lock = {
-+#ifdef DEBUG_SPINLOCK
+ #ifdef DEBUG_SPINLOCK
+-	.name = "kernel_lock"
 +	.name = "page_lock"
 +#endif
 +};
 +
-+// scheduler lock
++// scheduler lock (picking tasks)
 +struct spinlock sched_lock = {
 +#ifdef DEBUG_SPINLOCK
 +	.name = "sched_lock"
@@ -269,17 +283,23 @@ index bf4d2d2..49d36e5 100644
 +
 +// env list lock
 +struct spinlock env_lock = {
- #ifdef DEBUG_SPINLOCK
--	.name = "kernel_lock"
++#ifdef DEBUG_SPINLOCK
 +	.name = "env_lock"
++#endif
++};
++
++// ipc state lock
++struct spinlock ipc_lock = {
++#ifdef DEBUG_SPINLOCK
++	.name = "ipc_lock"
  #endif
  };
  
 diff --git a/kern/spinlock.h b/kern/spinlock.h
-index 52d20b4..37a77e5 100644
+index 52d20b4..d17ad0f 100644
 --- a/kern/spinlock.h
 +++ b/kern/spinlock.h
-@@ -25,24 +25,36 @@ void spin_unlock(struct spinlock *lk);
+@@ -25,24 +25,24 @@ void spin_unlock(struct spinlock *lk);
  
  #define spin_initlock(lock)   __spin_initlock(lock, #lock)
  
@@ -302,11 +322,11 @@ index 52d20b4..37a77e5 100644
 -	// another CPU has even been given a chance to acquire it.
 -	asm volatile("pause");
 -}
-+// extern struct spinlock kernel_lock;
 +extern struct spinlock page_lock;
 +extern struct spinlock sched_lock;
 +extern struct spinlock cons_lock;
 +extern struct spinlock env_lock;
++extern struct spinlock ipc_lock;
 +
 +#define CAT(x, y) x ## y
 +#define LOCK(type) spin_lock(&CAT(type, _lock))
@@ -316,27 +336,15 @@ index 52d20b4..37a77e5 100644
 +		asm volatile("pause");		\
 +	} while (0)
 +
-+// static inline void
-+// lock_kernel(void)
-+// {
-+// 	spin_lock(&kernel_lock);
-+// }
-+
-+// static inline void
-+// unlock_kernel(void)
-+// {
-+// 	spin_unlock(&kernel_lock);
-+
-+// 	// Normally we wouldn't need to do this, but QEMU only runs
-+// 	// one CPU at a time and has a long time-slice.  Without the
-+// 	// pause, this CPU is likely to reacquire the lock before
-+// 	// another CPU has even been given a chance to acquire it.
++// Normally we wouldn't need to do this, but QEMU only runs
++// one CPU at a time and has a long time-slice.  Without the
++// pause, this CPU is likely to reacquire the lock before
++// another CPU has even been given a chance to acquire it.
 +// 	asm volatile("pause");
-+// }
  
  #endif
 diff --git a/kern/syscall.c b/kern/syscall.c
-index f19a51f..f61dce6 100644
+index f19a51f..af98087 100644
 --- a/kern/syscall.c
 +++ b/kern/syscall.c
 @@ -11,6 +11,7 @@
@@ -357,32 +365,80 @@ index f19a51f..f61dce6 100644
  }
  
  // Read a character from the system console without blocking.
+@@ -302,8 +305,6 @@ sys_ipc_try_send(envid_t envid, uint32_t value, void *srcva, unsigned perm)
+ 	pte_t *pgtbl_entry = NULL;
+ 	if ((r = envid2env(envid, &env, 0)) != 0)
+ 		return r;
+-	if (env->env_ipc_recving == 0)
+-		return -E_IPC_NOT_RECV;
+ 	if ((uintptr_t)srcva < UTOP && (uintptr_t)srcva % PGSIZE)
+ 		return -E_INVAL;
+ 	if ((uintptr_t)srcva < UTOP && ((perm & PTE_P) != PTE_P || (perm & PTE_U) != PTE_U || (perm & ~PTE_SYSCALL) != 0))
+@@ -313,6 +314,14 @@ sys_ipc_try_send(envid_t envid, uint32_t value, void *srcva, unsigned perm)
+ 	if ((uintptr_t)srcva < UTOP && (perm & PTE_W) && !(*pgtbl_entry & PTE_W))
+ 		return -E_INVAL;
+ 
++	LOCK(ipc);
++	if (env->env_ipc_recving == 0)
++	{
++		UNLOCK(ipc);
++		return -E_IPC_NOT_RECV;
++	}
++	env->env_ipc_recving = 0;
++	UNLOCK(ipc);
+ 	env->env_ipc_perm = 0;
+ 	if ((uintptr_t)srcva < UTOP && (uintptr_t)(env->env_ipc_dstva) < UTOP)
+ 	{
+@@ -321,11 +330,10 @@ sys_ipc_try_send(envid_t envid, uint32_t value, void *srcva, unsigned perm)
+ 			return r;
+ 		env->env_ipc_perm = perm;	// update perm if there is actually a page being transferred
+ 	}
+-	env->env_ipc_recving = 0;
+ 	env->env_ipc_from = curenv->env_id;
+ 	env->env_ipc_value = value;
+-	env->env_status = ENV_RUNNABLE;
+ 	env->env_tf.tf_regs.reg_eax = 0;	// next time receiver being woken-up, it returns 0 and got the value or page it needs
++	env->env_status = ENV_RUNNABLE;
+ 
+ 	return 0;
+ }
+@@ -347,7 +355,9 @@ sys_ipc_recv(void *dstva)
+ 	// LAB 4: Your code here.
+ 	if ((uintptr_t)dstva < UTOP && (uintptr_t)dstva % PGSIZE)
+ 		return -E_INVAL;
++	LOCK(ipc);
+ 	curenv->env_ipc_recving = 1;	// ready for receiving something
++	UNLOCK(ipc);
+ 	curenv->env_ipc_dstva = dstva;	// tell sender if we want a page
+ 
+ 	// now we give up CPU
 diff --git a/kern/trap.c b/kern/trap.c
-index 59027a8..4a78b59 100644
+index 59027a8..740f892 100644
 --- a/kern/trap.c
 +++ b/kern/trap.c
-@@ -275,8 +275,9 @@ trap(struct Trapframe *tf)
+@@ -273,10 +273,9 @@ trap(struct Trapframe *tf)
+ 	if (panicstr)
+ 		asm volatile("hlt");
  
- 	// Re-acqurie the big kernel lock if we were halted in
- 	// sched_yield()
+-	// Re-acqurie the big kernel lock if we were halted in
+-	// sched_yield()
 -	if (xchg(&thiscpu->cpu_status, CPU_STARTED) == CPU_HALTED)
 -		lock_kernel();
++	// wake up halted cpu
 +	if (thiscpu->cpu_status == CPU_HALTED)
 +		xchg(&thiscpu->cpu_status, CPU_STARTED);
-+		// LOCK(sched);
  	// Check that interrupts are disabled.  If this assertion
  	// fails, DO NOT be tempted to fix it by inserting a "cli" in
  	// the interrupt path.
-@@ -287,7 +288,7 @@ trap(struct Trapframe *tf)
+@@ -287,7 +286,6 @@ trap(struct Trapframe *tf)
  		// Acquire the big kernel lock before doing any
  		// serious kernel work.
  		// LAB 4: Your code here.
 -		lock_kernel();
-+		// lock_kernel();
  
  		// Question 2: Why do we still need separate kernel stacks for each CPU?
  		// Answer: 
-@@ -324,7 +325,10 @@ trap(struct Trapframe *tf)
+@@ -324,7 +322,10 @@ trap(struct Trapframe *tf)
  	// scheduled, so we should return to the current environment
  	// if doing so makes sense.
  	if (curenv && curenv->env_status == ENV_RUNNING)
@@ -393,7 +449,7 @@ index 59027a8..4a78b59 100644
  	else
  		sched_yield();
  }
-@@ -408,6 +412,7 @@ page_fault_handler(struct Trapframe *tf)
+@@ -408,6 +409,7 @@ page_fault_handler(struct Trapframe *tf)
  
  	tf->tf_esp = (uintptr_t)&utf->utf_fault_va;
  	tf->tf_eip = (uintptr_t)curenv->env_pgfault_upcall;
