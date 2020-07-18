@@ -1,4 +1,4 @@
-From 2ed77e7f198f19ba1d14d1d963ec0b1ff7b0a46a Mon Sep 17 00:00:00 2001
+From a4ae2cc7106cda422866519c058c807a4b294046 Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Fri, 17 Jul 2020 23:37:08 +0000
 Subject: [PATCH] try with fine-grained locks..
@@ -10,17 +10,17 @@ adding lock for:
 4. ipc state
 ---
  inc/env.h        |  1 +
- kern/env.c       | 20 ++++++++++++++++----
- kern/init.c      | 12 ++----------
- kern/monitor.c   |  6 ------
- kern/pmap.c      |  6 ++++++
- kern/sched.c     |  6 +++---
- kern/spinlock.c  | 34 +++++++++++++++++++++++++++++++---
- kern/spinlock.h  | 38 +++++++++++++++++++-------------------
- kern/syscall.c   | 18 ++++++++++++++----
- kern/trap.c      | 12 +++++++-----
- kern/trapentry.S | 30 +++++++++++++++---------------
- 11 files changed, 114 insertions(+), 69 deletions(-)
+ kern/env.c       | 20 ++++++++++---
+ kern/init.c      | 12 ++------
+ kern/monitor.c   |  6 ----
+ kern/pmap.c      |  6 ++++
+ kern/sched.c     |  8 +++---
+ kern/spinlock.c  | 34 +++++++++++++++++++++--
+ kern/spinlock.h  | 85 ++++++++++++++++++++++++++++++++++++++++++++++++++++----
+ kern/syscall.c   | 18 +++++++++---
+ kern/trap.c      | 12 ++++----
+ kern/trapentry.S | 30 ++++++++++----------
+ 11 files changed, 176 insertions(+), 56 deletions(-)
 
 diff --git a/inc/env.h b/inc/env.h
 index b04f1a3..13df7de 100644
@@ -35,30 +35,30 @@ index b04f1a3..13df7de 100644
  	ENV_RUNNABLE,
  	ENV_RUNNING,
 diff --git a/kern/env.c b/kern/env.c
-index e1019da..103c241 100644
+index e1019da..fd3da33 100644
 --- a/kern/env.c
 +++ b/kern/env.c
 @@ -220,12 +220,23 @@ env_alloc(struct Env **newenv_store, envid_t parent_id)
  	int r;
  	struct Env *e;
  
-+	LOCK(env);
++	lock_env();
  	if (!(e = env_free_list))
 +	{
-+		UNLOCK(env);
++		unlock_env();
  		return -E_NO_FREE_ENV;
 +	}
  
  	// Allocate and set up the page directory for this environment.
  	if ((r = env_setup_vm(e)) < 0)
 +	{
-+		UNLOCK(env);
++		unlock_env();
  		return r;
 +	}
 +
 +	// commit the allocation
 +	env_free_list = e->env_link;
-+	UNLOCK(env);
++	unlock_env();
  
  	// Generate an env_id for this environment.
  	generation = (e->env_id + (1 << ENVGENSHIFT)) & ~(NENV - 1);
@@ -92,10 +92,10 @@ index e1019da..103c241 100644
  
  	// return the environment to the free list
  	e->env_status = ENV_FREE;
-+	LOCK(env);
++	lock_env();
  	e->env_link = env_free_list;
  	env_free_list = e;
-+	UNLOCK(env);
++	unlock_env();
  }
  
  //
@@ -104,7 +104,7 @@ index e1019da..103c241 100644
  
  	lcr3(PADDR(curenv->env_pgdir));
 -	unlock_kernel();
-+	UNLOCK(sched);
++	unlock_sched();
  	env_pop_tf(&(curenv->env_tf));
  }
  
@@ -171,7 +171,7 @@ index c46e3fb..ac6a91e 100644
  	}
  
 diff --git a/kern/pmap.c b/kern/pmap.c
-index c2e22a7..bb1ad5c 100644
+index c2e22a7..5d4eae3 100644
 --- a/kern/pmap.c
 +++ b/kern/pmap.c
 @@ -10,6 +10,7 @@
@@ -186,17 +186,17 @@ index c2e22a7..bb1ad5c 100644
  page_alloc(int alloc_flags)
  {
  	// Fill this function in
-+	LOCK(page);
++	lock_page();
  	if (page_free_list == NULL)
  	{
-+		UNLOCK(page);
++		unlock_page();
  		return NULL;
  	}
  
  	struct PageInfo *alloc_page;
  	alloc_page = page_free_list;
  	page_free_list = page_free_list->pp_link;
-+	UNLOCK(page);
++	unlock_page();
  	alloc_page->pp_link = NULL;
  
  	if (alloc_flags & ALLOC_ZERO)
@@ -204,15 +204,15 @@ index c2e22a7..bb1ad5c 100644
  	{
  		panic("Page is still in use! Cannot be freed");
  	}
-+	LOCK(page);
++	lock_page();
  	pp->pp_link = page_free_list;
  	page_free_list = pp;
-+	UNLOCK(page);
++	unlock_page();
  }
  
  //
 diff --git a/kern/sched.c b/kern/sched.c
-index 9e464d7..a7aab22 100644
+index 9e464d7..97b7aeb 100644
 --- a/kern/sched.c
 +++ b/kern/sched.c
 @@ -11,8 +11,6 @@ void sched_halt(void);
@@ -228,7 +228,7 @@ index 9e464d7..a7aab22 100644
  	int i = 0, curpos = 0, k = 0;
  	if (curenv)
  		curpos = ENVX(curenv->env_id);
-+	LOCK(sched);
++	lock_sched();
  	for (; i < NENV; i++)
  	{
  		k = (i + curpos) % NENV;		// in a circular way
@@ -236,7 +236,7 @@ index 9e464d7..a7aab22 100644
  			break;
  	}
  	if (i == NENV) {
-+		// if we are here, we still hold the scheduler lock
++		// unlock_sched();
  		cprintf("No runnable environments in the system!\n");
  		while (1)
  			monitor(NULL);
@@ -245,10 +245,19 @@ index 9e464d7..a7aab22 100644
  
  	// Release the big kernel lock as if we were "leaving" the kernel
 -	unlock_kernel();
-+	UNLOCK(sched);
++	unlock_sched();
  
  	// Reset stack pointer, enable interrupts and then halt.
  	asm volatile (
+@@ -94,7 +94,7 @@ sched_halt(void)
+ 		"sti\n"
+ 		"1:\n"
+ 		"hlt\n"
+-		"jmp 1b\n"
++		// "jmp 1b\n"
+ 	: : "a" (thiscpu->cpu_ts.ts_esp0));
+ }
+ 
 diff --git a/kern/spinlock.c b/kern/spinlock.c
 index bf4d2d2..a350ba1 100644
 --- a/kern/spinlock.c
@@ -296,55 +305,115 @@ index bf4d2d2..a350ba1 100644
  };
  
 diff --git a/kern/spinlock.h b/kern/spinlock.h
-index 52d20b4..d17ad0f 100644
+index 52d20b4..11c67ba 100644
 --- a/kern/spinlock.h
 +++ b/kern/spinlock.h
-@@ -25,24 +25,24 @@ void spin_unlock(struct spinlock *lk);
+@@ -25,18 +25,22 @@ void spin_unlock(struct spinlock *lk);
  
  #define spin_initlock(lock)   __spin_initlock(lock, #lock)
  
 -extern struct spinlock kernel_lock;
--
--static inline void
--lock_kernel(void)
--{
--	spin_lock(&kernel_lock);
--}
--
--static inline void
--unlock_kernel(void)
--{
--	spin_unlock(&kernel_lock);
--
--	// Normally we wouldn't need to do this, but QEMU only runs
--	// one CPU at a time and has a long time-slice.  Without the
--	// pause, this CPU is likely to reacquire the lock before
--	// another CPU has even been given a chance to acquire it.
--	asm volatile("pause");
--}
 +extern struct spinlock page_lock;
 +extern struct spinlock sched_lock;
 +extern struct spinlock cons_lock;
 +extern struct spinlock env_lock;
 +extern struct spinlock ipc_lock;
-+
-+#define CAT(x, y) x ## y
-+#define LOCK(type) spin_lock(&CAT(type, _lock))
-+#define UNLOCK(type) \
-+	do {			\
-+		spin_unlock(&CAT(type, _lock)); \
-+		asm volatile("pause");		\
-+	} while (0)
-+
-+// Normally we wouldn't need to do this, but QEMU only runs
-+// one CPU at a time and has a long time-slice.  Without the
-+// pause, this CPU is likely to reacquire the lock before
-+// another CPU has even been given a chance to acquire it.
-+// 	asm volatile("pause");
  
+ static inline void
+-lock_kernel(void)
++lock_page(void)
+ {
+-	spin_lock(&kernel_lock);
++	spin_lock(&page_lock);
+ }
+ 
+ static inline void
+-unlock_kernel(void)
++unlock_page(void)
+ {
+-	spin_unlock(&kernel_lock);
++	spin_unlock(&page_lock);
+ 
+ 	// Normally we wouldn't need to do this, but QEMU only runs
+ 	// one CPU at a time and has a long time-slice.  Without the
+@@ -45,4 +49,75 @@ unlock_kernel(void)
+ 	asm volatile("pause");
+ }
+ 
++static inline void
++lock_sched(void)
++{
++	spin_lock(&sched_lock);
++}
++
++static inline void
++unlock_sched(void)
++{
++	spin_unlock(&sched_lock);
++
++	// Normally we wouldn't need to do this, but QEMU only runs
++	// one CPU at a time and has a long time-slice.  Without the
++	// pause, this CPU is likely to reacquire the lock before
++	// another CPU has even been given a chance to acquire it.
++	asm volatile("pause");
++}
++
++static inline void
++lock_cons(void)
++{
++	spin_lock(&cons_lock);
++}
++
++static inline void
++unlock_cons(void)
++{
++	spin_unlock(&cons_lock);
++
++	// Normally we wouldn't need to do this, but QEMU only runs
++	// one CPU at a time and has a long time-slice.  Without the
++	// pause, this CPU is likely to reacquire the lock before
++	// another CPU has even been given a chance to acquire it.
++	asm volatile("pause");
++}
++
++static inline void
++lock_env(void)
++{
++	spin_lock(&env_lock);
++}
++
++static inline void
++unlock_env(void)
++{
++	spin_unlock(&env_lock);
++
++	// Normally we wouldn't need to do this, but QEMU only runs
++	// one CPU at a time and has a long time-slice.  Without the
++	// pause, this CPU is likely to reacquire the lock before
++	// another CPU has even been given a chance to acquire it.
++	asm volatile("pause");
++}
++
++static inline void
++lock_ipc(void)
++{
++	spin_lock(&ipc_lock);
++}
++
++static inline void
++unlock_ipc(void)
++{
++	spin_unlock(&ipc_lock);
++
++	// Normally we wouldn't need to do this, but QEMU only runs
++	// one CPU at a time and has a long time-slice.  Without the
++	// pause, this CPU is likely to reacquire the lock before
++	// another CPU has even been given a chance to acquire it.
++	asm volatile("pause");
++}
  #endif
 diff --git a/kern/syscall.c b/kern/syscall.c
-index f19a51f..af98087 100644
+index f19a51f..642caec 100644
 --- a/kern/syscall.c
 +++ b/kern/syscall.c
 @@ -11,6 +11,7 @@
@@ -359,9 +428,9 @@ index f19a51f..af98087 100644
  	user_mem_assert(curenv, s, len, PTE_U);
  
  	// Print the string supplied by the user.
-+	LOCK(cons);
++	lock_cons();
  	cprintf("%.*s", len, s);
-+	UNLOCK(cons);
++	unlock_cons();
  }
  
  // Read a character from the system console without blocking.
@@ -378,14 +447,14 @@ index f19a51f..af98087 100644
  	if ((uintptr_t)srcva < UTOP && (perm & PTE_W) && !(*pgtbl_entry & PTE_W))
  		return -E_INVAL;
  
-+	LOCK(ipc);
++	lock_ipc();
 +	if (env->env_ipc_recving == 0)
 +	{
-+		UNLOCK(ipc);
++		unlock_ipc();
 +		return -E_IPC_NOT_RECV;
 +	}
 +	env->env_ipc_recving = 0;
-+	UNLOCK(ipc);
++	unlock_ipc();
  	env->env_ipc_perm = 0;
  	if ((uintptr_t)srcva < UTOP && (uintptr_t)(env->env_ipc_dstva) < UTOP)
  	{
@@ -406,14 +475,14 @@ index f19a51f..af98087 100644
  	// LAB 4: Your code here.
  	if ((uintptr_t)dstva < UTOP && (uintptr_t)dstva % PGSIZE)
  		return -E_INVAL;
-+	LOCK(ipc);
++	lock_ipc();
  	curenv->env_ipc_recving = 1;	// ready for receiving something
-+	UNLOCK(ipc);
++	unlock_ipc();
  	curenv->env_ipc_dstva = dstva;	// tell sender if we want a page
  
  	// now we give up CPU
 diff --git a/kern/trap.c b/kern/trap.c
-index 59027a8..740f892 100644
+index 59027a8..6e14d06 100644
 --- a/kern/trap.c
 +++ b/kern/trap.c
 @@ -273,10 +273,9 @@ trap(struct Trapframe *tf)
@@ -443,7 +512,7 @@ index 59027a8..740f892 100644
  	// if doing so makes sense.
  	if (curenv && curenv->env_status == ENV_RUNNING)
 +	{
-+		LOCK(sched);
++		lock_sched();
  		env_run(curenv);
 +	}
  	else
@@ -453,7 +522,7 @@ index 59027a8..740f892 100644
  
  	tf->tf_esp = (uintptr_t)&utf->utf_fault_va;
  	tf->tf_eip = (uintptr_t)curenv->env_pgfault_upcall;
-+	LOCK(sched);
++	lock_sched();
  	env_run(curenv);
  end:
  	// Destroy the environment that caused the fault.
