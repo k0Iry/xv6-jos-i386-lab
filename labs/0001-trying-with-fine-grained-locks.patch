@@ -1,26 +1,45 @@
-From b2f1540e07a39dd85695b7158c6fab9660707ea8 Mon Sep 17 00:00:00 2001
+From 4d3db7bc50a154377fd56592c4eb5587bacf307a Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Mon, 20 Jul 2020 14:09:37 +0000
 Subject: [PATCH] trying with fine-grained locks...
 
 1. page free list lock
 2. scheduler lock (similar to env list lock)
+
+added some comments
 ---
- kern/env.c      |  7 +++++--
- kern/init.c     | 12 ++----------
+ kern/env.c      |  9 +++++++--
+ kern/init.c     | 14 ++++----------
+ kern/lapic.c    |  8 ++++++--
  kern/pmap.c     |  6 ++++++
  kern/sched.c    |  3 ++-
- kern/spinlock.c | 14 ++++++++++++++
- kern/spinlock.h | 28 ++++++++++++++++++++++++++++
+ kern/spinlock.c | 21 +++++++++++++++++++++
+ kern/spinlock.h | 42 ++++++++++++++++++++++++++++++++++++++++++
  kern/syscall.c  |  3 +++
  kern/trap.c     | 15 +++++++++------
- 8 files changed, 69 insertions(+), 19 deletions(-)
+ 9 files changed, 100 insertions(+), 21 deletions(-)
 
 diff --git a/kern/env.c b/kern/env.c
-index e1019da..23a971e 100644
+index e1019da..648987e 100644
 --- a/kern/env.c
 +++ b/kern/env.c
-@@ -236,7 +236,7 @@ env_alloc(struct Env **newenv_store, envid_t parent_id)
+@@ -90,6 +90,7 @@ envid2env(envid_t envid, struct Env **env_store, bool checkperm)
+ 	// that used the same slot in the envs[] array).
+ 	e = &envs[ENVX(envid)];
+ 	if (e->env_status == ENV_FREE || e->env_id != envid) {
++		cprintf("e->env_id 0x%x, envid: 0x%x\n", e->env_id, envid);
+ 		*env_store = 0;
+ 		return -E_BAD_ENV;
+ 	}
+@@ -100,6 +101,7 @@ envid2env(envid_t envid, struct Env **env_store, bool checkperm)
+ 	// must be either the current environment
+ 	// or an immediate child of the current environment.
+ 	if (checkperm && e != curenv && e->env_parent_id != curenv->env_id) {
++		cprintf("e->env_parent_id 0x%x, curenv->env_id: 0x%x\n", e->env_parent_id, curenv->env_id);
+ 		*env_store = 0;
+ 		return -E_BAD_ENV;
+ 	}
+@@ -236,7 +238,7 @@ env_alloc(struct Env **newenv_store, envid_t parent_id)
  	// Set the basic status variables.
  	e->env_parent_id = parent_id;
  	e->env_type = ENV_TYPE_USER;
@@ -29,7 +48,7 @@ index e1019da..23a971e 100644
  	e->env_runs = 0;
  
  	// Clear out all the saved register state,
-@@ -417,6 +417,7 @@ env_create(uint8_t *binary, enum EnvType type)
+@@ -417,6 +419,7 @@ env_create(uint8_t *binary, enum EnvType type)
  		panic("env_alloc");
  	load_icode(new_env, binary);
  	new_env->env_type = type;
@@ -37,7 +56,7 @@ index e1019da..23a971e 100644
  }
  
  //
-@@ -492,6 +493,7 @@ env_destroy(struct Env *e)
+@@ -492,6 +495,7 @@ env_destroy(struct Env *e)
  
  	if (curenv == e) {
  		curenv = NULL;
@@ -45,7 +64,7 @@ index e1019da..23a971e 100644
  		sched_yield();
  	}
  }
-@@ -557,7 +559,8 @@ env_run(struct Env *e)
+@@ -557,7 +561,8 @@ env_run(struct Env *e)
  	curenv->env_runs ++;
  
  	lcr3(PADDR(curenv->env_pgdir));
@@ -56,7 +75,7 @@ index e1019da..23a971e 100644
  }
  
 diff --git a/kern/init.c b/kern/init.c
-index 0a0faaa..62c4af7 100644
+index 0a0faaa..508d31c 100644
 --- a/kern/init.c
 +++ b/kern/init.c
 @@ -13,7 +13,6 @@
@@ -91,7 +110,16 @@ index 0a0faaa..62c4af7 100644
  	// Schedule and run the first user environment!
  	sched_yield();
  }
-@@ -117,7 +110,6 @@ mp_main(void)
+@@ -105,6 +98,8 @@ mp_main(void)
+ {
+ 	// We are in high EIP now, safe to switch to kern_pgdir 
+ 	lcr3(PADDR(kern_pgdir));
++	// now the memory-mapped device content has been
++	// updated with current processor's local apic
+ 	cprintf("SMP: CPU %d starting\n", cpunum());
+ 
+ 	lapic_init();
+@@ -117,7 +112,6 @@ mp_main(void)
  	// only one CPU can enter the scheduler at a time!
  	//
  	// Your code here:
@@ -99,6 +127,52 @@ index 0a0faaa..62c4af7 100644
  	sched_yield();
  
  	// Remove this after you finish Exercise 6
+diff --git a/kern/lapic.c b/kern/lapic.c
+index dc05777..d60aa1e 100644
+--- a/kern/lapic.c
++++ b/kern/lapic.c
+@@ -21,7 +21,7 @@
+ #define ICRLO   (0x0300/4)   // Interrupt Command
+ 	#define INIT       0x00000500   // INIT/RESET
+ 	#define STARTUP    0x00000600   // Startup IPI
+-	#define DELIVS     0x00001000   // Delivery status
++	#define DELIVS     0x00001000   // Delivery status (read-only, 0: Idle, 1: Send Pending)
+ 	#define ASSERT     0x00004000   // Assert interrupt (vs deassert)
+ 	#define DEASSERT   0x00000000
+ 	#define LEVEL      0x00008000   // Level triggered
+@@ -39,7 +39,7 @@
+ #define ERROR   (0x0370/4)   // Local Vector Table 3 (ERROR)
+ 	#define MASKED     0x00010000   // Interrupt masked
+ #define TICR    (0x0380/4)   // Timer Initial Count
+-#define TCCR    (0x0390/4)   // Timer Current Count
++#define TCCR    (0x0390/4)   // Timer Current Count (read only)
+ #define TDCR    (0x03E0/4)   // Timer Divide Configuration
+ 
+ physaddr_t lapicaddr;        // Initialized in mpconfig.c
+@@ -63,6 +63,8 @@ lapic_init(void)
+ 	lapic = mmio_map_region(lapicaddr, 4096);
+ 
+ 	// Enable local APIC; set spurious interrupt vector.
++	// The spurious-interrupt vector register is initialized to 000000FFH. 
++	// By setting bit 8 to 0, software disables the local APIC.
+ 	lapicw(SVR, ENABLE | (IRQ_OFFSET + IRQ_SPURIOUS));
+ 
+ 	// The timer repeatedly counts down at bus frequency
+@@ -160,12 +162,14 @@ lapic_startap(uint8_t apicid, uint32_t addr)
+ 	microdelay(200);
+ 	lapicw(ICRLO, INIT | LEVEL);
+ 	microdelay(100);    // should be 10ms, but too slow in Bochs!
++	// wait-for-SIPI state
+ 
+ 	// Send startup IPI (twice!) to enter code.
+ 	// Regular hardware is supposed to only accept a STARTUP
+ 	// when it is in the halted state due to an INIT.  So the second
+ 	// should be ignored, but it is part of the official Intel algorithm.
+ 	// Bochs complains about the second one.  Too bad for Bochs.
++	// INIT-SIPI-SIPI sequence
+ 	for (i = 0; i < 2; i++) {
+ 		lapicw(ICRHI, apicid << 24);
+ 		lapicw(ICRLO, STARTUP | (addr >> 12));
 diff --git a/kern/pmap.c b/kern/pmap.c
 index c2e22a7..a598f78 100644
 --- a/kern/pmap.c
@@ -162,10 +236,10 @@ index 9e464d7..a9944c5 100644
  	// Reset stack pointer, enable interrupts and then halt.
  	asm volatile (
 diff --git a/kern/spinlock.c b/kern/spinlock.c
-index bf4d2d2..be4c253 100644
+index bf4d2d2..9a6eea0 100644
 --- a/kern/spinlock.c
 +++ b/kern/spinlock.c
-@@ -16,6 +16,20 @@ struct spinlock kernel_lock = {
+@@ -16,6 +16,27 @@ struct spinlock kernel_lock = {
  #endif
  };
  
@@ -183,19 +257,27 @@ index bf4d2d2..be4c253 100644
 +#endif
 +};
 +
++// inter-process communication lock
++struct spinlock ipc_lock = {
++#ifdef DEBUG_SPINLOCK
++	.name = "ipc_lock"
++#endif
++};
++
  #ifdef DEBUG_SPINLOCK
  // Record the current call stack in pcs[] by following the %ebp chain.
  static void
 diff --git a/kern/spinlock.h b/kern/spinlock.h
-index 52d20b4..51256dc 100644
+index 52d20b4..7aa3a3c 100644
 --- a/kern/spinlock.h
 +++ b/kern/spinlock.h
-@@ -26,6 +26,34 @@ void spin_unlock(struct spinlock *lk);
+@@ -26,6 +26,48 @@ void spin_unlock(struct spinlock *lk);
  #define spin_initlock(lock)   __spin_initlock(lock, #lock)
  
  extern struct spinlock kernel_lock;
 +extern struct spinlock pagelist_lock;
 +extern struct spinlock scheduler_lock;
++extern struct spinlock ipc_lock;
 +
 +static inline void
 +lock_pagelist(void)
@@ -220,6 +302,19 @@ index 52d20b4..51256dc 100644
 +unlock_scheduler(void)
 +{
 +	spin_unlock(&scheduler_lock);
++	asm volatile("pause");
++}
++
++static inline void
++lock_ipc(void)
++{
++	spin_lock(&ipc_lock);
++}
++
++static inline void
++unlock_ipc(void)
++{
++	spin_unlock(&ipc_lock);
 +	asm volatile("pause");
 +}
  
@@ -315,5 +410,5 @@ index 59027a8..a981a75 100644
  end:
  	// Destroy the environment that caused the fault.
 -- 
-2.11.0
+2.20.1
 
