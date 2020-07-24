@@ -10,7 +10,7 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y \
     dpkg-reconfigure --frontend=noninteractive locales && update-locale LANG=en_US.UTF-8 && \
     git clone https://github.com/k0Iry/6.828-qemu.git qemu && \
     cd qemu && ./configure --disable-kvm --disable-werror --target-list="i386-softmmu x86_64-softmmu" \
-    && make -j 4 && make install && cd .. && rm -rf qemu && sed -i '9,12 s/^#//' /root/.bashrc
+    && cpus=$(nproc) && make -j $cpus && make install && cd .. && rm -rf qemu && sed -i '9,12 s/^#//' /root/.bashrc
 
 VOLUME /usr/src/app
 WORKDIR /usr/src/app
