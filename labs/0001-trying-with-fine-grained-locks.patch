@@ -1,4 +1,4 @@
-From 4d3db7bc50a154377fd56592c4eb5587bacf307a Mon Sep 17 00:00:00 2001
+From 2f50f4b77cd140d636e3274b482faf732a360fa9 Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Mon, 20 Jul 2020 14:09:37 +0000
 Subject: [PATCH] trying with fine-grained locks...
@@ -8,19 +8,20 @@ Subject: [PATCH] trying with fine-grained locks...
 
 added some comments
 ---
- kern/env.c      |  9 +++++++--
+ kern/env.c      | 13 +++++++++----
  kern/init.c     | 14 ++++----------
  kern/lapic.c    |  8 ++++++--
  kern/pmap.c     |  6 ++++++
- kern/sched.c    |  3 ++-
+ kern/sched.c    | 10 +++++++---
  kern/spinlock.c | 21 +++++++++++++++++++++
  kern/spinlock.h | 42 ++++++++++++++++++++++++++++++++++++++++++
  kern/syscall.c  |  3 +++
- kern/trap.c     | 15 +++++++++------
- 9 files changed, 100 insertions(+), 21 deletions(-)
+ kern/trap.c     | 11 +++++------
+ lib/ipc.c       |  3 ++-
+ 10 files changed, 105 insertions(+), 26 deletions(-)
 
 diff --git a/kern/env.c b/kern/env.c
-index e1019da..648987e 100644
+index e1019da..5668d1b 100644
 --- a/kern/env.c
 +++ b/kern/env.c
 @@ -90,6 +90,7 @@ envid2env(envid_t envid, struct Env **env_store, bool checkperm)
@@ -31,15 +32,7 @@ index e1019da..648987e 100644
  		*env_store = 0;
  		return -E_BAD_ENV;
  	}
-@@ -100,6 +101,7 @@ envid2env(envid_t envid, struct Env **env_store, bool checkperm)
- 	// must be either the current environment
- 	// or an immediate child of the current environment.
- 	if (checkperm && e != curenv && e->env_parent_id != curenv->env_id) {
-+		cprintf("e->env_parent_id 0x%x, curenv->env_id: 0x%x\n", e->env_parent_id, curenv->env_id);
- 		*env_store = 0;
- 		return -E_BAD_ENV;
- 	}
-@@ -236,7 +238,7 @@ env_alloc(struct Env **newenv_store, envid_t parent_id)
+@@ -236,7 +237,7 @@ env_alloc(struct Env **newenv_store, envid_t parent_id)
  	// Set the basic status variables.
  	e->env_parent_id = parent_id;
  	e->env_type = ENV_TYPE_USER;
@@ -48,7 +41,7 @@ index e1019da..648987e 100644
  	e->env_runs = 0;
  
  	// Clear out all the saved register state,
-@@ -417,6 +419,7 @@ env_create(uint8_t *binary, enum EnvType type)
+@@ -417,6 +418,7 @@ env_create(uint8_t *binary, enum EnvType type)
  		panic("env_alloc");
  	load_icode(new_env, binary);
  	new_env->env_type = type;
@@ -56,21 +49,33 @@ index e1019da..648987e 100644
  }
  
  //
-@@ -492,6 +495,7 @@ env_destroy(struct Env *e)
+@@ -510,7 +512,7 @@ env_pop_tf(struct Trapframe *tf)
+ 	curenv->env_cpunum = cpunum();
  
- 	if (curenv == e) {
- 		curenv = NULL;
-+		unlock_kernel();
- 		sched_yield();
- 	}
- }
-@@ -557,7 +561,8 @@ env_run(struct Env *e)
+ 	asm volatile(
+-		"\tmovl %0,%%esp\n"
++		"\tmovl %0,%%esp\n" /* switch kernel stack if necessary */
+ 		"\tpopal\n"
+ 		"\tpopl %%es\n"
+ 		"\tpopl %%ds\n"
+@@ -547,7 +549,7 @@ env_run(struct Env *e)
+ 	//	e->env_tf to sensible values.
+ 
+ 	// LAB 3: Your code here.
+-	if (curenv != NULL && curenv != e)
++	if (curenv && curenv != e)
+ 	{
+ 		if (curenv->env_status == ENV_RUNNING)
+ 			curenv->env_status = ENV_RUNNABLE;
+@@ -557,7 +559,10 @@ env_run(struct Env *e)
  	curenv->env_runs ++;
  
  	lcr3(PADDR(curenv->env_pgdir));
 -	unlock_kernel();
 +	if (scheduler_lock.locked && scheduler_lock.cpu == thiscpu)
 +		unlock_scheduler();
++	if (kernel_lock.locked && kernel_lock.cpu == thiscpu)
++		unlock_kernel();
  	env_pop_tf(&(curenv->env_tf));
  }
  
@@ -215,23 +220,39 @@ index c2e22a7..a598f78 100644
  
  //
 diff --git a/kern/sched.c b/kern/sched.c
-index 9e464d7..a9944c5 100644
+index 9e464d7..cbcafec 100644
 --- a/kern/sched.c
 +++ b/kern/sched.c
-@@ -33,6 +33,7 @@ sched_yield(void)
- 	int i = 0, curpos = 0, k = 0;
+@@ -30,9 +30,10 @@ sched_yield(void)
+ 	// below to halt the cpu.
+ 
+ 	// LAB 4: Your code here.
+-	int i = 0, curpos = 0, k = 0;
++	int i = 1, curpos = -1, k = 0;
  	if (curenv)
  		curpos = ENVX(curenv->env_id);
 +	lock_scheduler();
  	for (; i < NENV; i++)
  	{
  		k = (i + curpos) % NENV;		// in a circular way
-@@ -82,7 +83,7 @@ sched_halt(void)
+@@ -41,7 +42,7 @@ sched_yield(void)
+ 			env_run(&envs[k]);
+ 		}
+ 	}
+-	if (curenv != NULL && curenv->env_status == ENV_RUNNING)
++	if (curenv && curenv->env_status == ENV_RUNNING && curenv->env_cpunum == cpunum())
+ 	{
+ 		env_run(curenv);
+ 	}
+@@ -82,7 +83,10 @@ sched_halt(void)
  	xchg(&thiscpu->cpu_status, CPU_HALTED);
  
  	// Release the big kernel lock as if we were "leaving" the kernel
 -	unlock_kernel();
-+	unlock_scheduler();
++	if (kernel_lock.locked && kernel_lock.cpu == thiscpu)
++		unlock_kernel();
++	if (scheduler_lock.locked && scheduler_lock.cpu == thiscpu)
++		unlock_scheduler();
  
  	// Reset stack pointer, enable interrupts and then halt.
  	asm volatile (
@@ -349,18 +370,10 @@ index f19a51f..230ecf2 100644
  
  	return 0;
 diff --git a/kern/trap.c b/kern/trap.c
-index 59027a8..a981a75 100644
+index 59027a8..d826510 100644
 --- a/kern/trap.c
 +++ b/kern/trap.c
-@@ -243,6 +243,7 @@ trap_dispatch(struct Trapframe *tf)
- 		switch (tf->tf_trapno)
- 		{
- 		case IRQ_OFFSET + IRQ_TIMER:
-+			unlock_kernel();
- 			sched_yield();
- 			break;
- 
-@@ -275,19 +276,18 @@ trap(struct Trapframe *tf)
+@@ -275,19 +275,18 @@ trap(struct Trapframe *tf)
  
  	// Re-acqurie the big kernel lock if we were halted in
  	// sched_yield()
@@ -385,30 +398,20 @@ index 59027a8..a981a75 100644
  
  		// Question 2: Why do we still need separate kernel stacks for each CPU?
  		// Answer: 
-@@ -302,6 +302,7 @@ trap(struct Trapframe *tf)
- 		if (curenv->env_status == ENV_DYING) {
- 			env_free(curenv);
- 			curenv = NULL;
-+			unlock_kernel();
- 			sched_yield();
- 		}
- 
-@@ -323,6 +324,7 @@ trap(struct Trapframe *tf)
- 	// If we made it to this point, then no other environment was
- 	// scheduled, so we should return to the current environment
- 	// if doing so makes sense.
-+	unlock_kernel();
- 	if (curenv && curenv->env_status == ENV_RUNNING)
- 		env_run(curenv);
- 	else
-@@ -408,6 +410,7 @@ page_fault_handler(struct Trapframe *tf)
- 
- 	tf->tf_esp = (uintptr_t)&utf->utf_fault_va;
- 	tf->tf_eip = (uintptr_t)curenv->env_pgfault_upcall;
-+	unlock_kernel();
- 	env_run(curenv);
- end:
- 	// Destroy the environment that caused the fault.
+diff --git a/lib/ipc.c b/lib/ipc.c
+index e05a1e3..c1b6f32 100644
+--- a/lib/ipc.c
++++ b/lib/ipc.c
+@@ -60,7 +60,8 @@ ipc_send(envid_t to_env, uint32_t val, void *pg, int perm)
+ 	while ((r = sys_ipc_try_send(to_env, val, pg, perm)) != 0)
+ 	{
+ 		if (r != -E_IPC_NOT_RECV)
+-			panic("sys_ipc_try_send, %e", r);
++			panic("sys_ipc_try_send %u on cpu %d, %e", val, thisenv->env_cpunum, r);
++		// yield the CPU, current status: ENV_RUNNING
+ 		sys_yield();
+ 	}
+ }
 -- 
 2.20.1
 
