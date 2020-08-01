@@ -1,0 +1,231 @@
+From 99ed23108c896f36e011202b48514cc157e27159 Mon Sep 17 00:00:00 2001
+From: Aaron <kljsandjb@me.com>
+Date: Sat, 1 Aug 2020 20:29:38 +0000
+Subject: [PATCH] uthreads
+
+---
+ Makefile         |   5 +++
+ proc.c           |   3 ++
+ trap.c           |   2 +-
+ uthread.c        | 114 +++++++++++++++++++++++++++++++++++++++++++++++
+ uthread_switch.S |  36 +++++++++++++++
+ 5 files changed, 159 insertions(+), 1 deletion(-)
+ create mode 100644 uthread.c
+ create mode 100644 uthread_switch.S
+
+diff --git a/Makefile b/Makefile
+index f026203..e84f397 100644
+--- a/Makefile
++++ b/Makefile
+@@ -156,6 +156,10 @@ _forktest: forktest.o $(ULIB)
+ 	$(LD) $(LDFLAGS) -N -e main -Ttext 0 -o _forktest forktest.o ulib.o usys.o
+ 	$(OBJDUMP) -S _forktest > forktest.asm
+ 
++_uthread: uthread.o uthread_switch.o
++	$(LD) $(LDFLAGS) -N -e main -Ttext 0 -o _uthread uthread.o uthread_switch.o $(ULIB)
++	$(OBJDUMP) -S _uthread > uthread.asm
++
+ mkfs: mkfs.c fs.h
+ 	gcc -Werror -Wno-nullability-completeness -Wall -o mkfs mkfs.c
+ 
+@@ -184,6 +188,7 @@ UPROGS=\
+ 	_date\
+ 	_sbrktest\
+ 	_alarmtest\
++	_uthread\
+ 
+ fs.img: mkfs README $(UPROGS)
+ 	./mkfs fs.img README $(UPROGS)
+diff --git a/proc.c b/proc.c
+index 54f2d9d..bf1fec1 100644
+--- a/proc.c
++++ b/proc.c
+@@ -367,6 +367,9 @@ void sched(void) {
+ // Give up the CPU for one scheduling round.
+ void yield(void) {
+   acquire(&ptable.lock); // DOC: yieldlock
++  // must hold ptable.lock, otherwise as soon as process's
++  // state changes to RUNNABLE, the scheduler() may
++  // immediately pick this again and run it on another cpu
+   myproc()->state = RUNNABLE;
+   sched();
+   release(&ptable.lock);
+diff --git a/trap.c b/trap.c
+index 106e95b..0df84cc 100644
+--- a/trap.c
++++ b/trap.c
+@@ -123,7 +123,7 @@ void trap(struct trapframe *tf) {
+       // we don't allocate new memory for exceeding process size
+       // if we implement malloc then I guess we do not need this condition
+       // anymore?
+-      cprintf("Invalid address 0x%x, will be panicked.\n", rcr2());
++      cprintf("at eip 0x%x, trying to access invalid address 0x%x, will be panicked.\n", tf->eip, rcr2());
+       panic("Invalid address!\n");
+     }
+     // what if we use system call write to the guard page,
+diff --git a/uthread.c b/uthread.c
+new file mode 100644
+index 0000000..66fc1f8
+--- /dev/null
++++ b/uthread.c
+@@ -0,0 +1,114 @@
++#include "types.h"
++#include "stat.h"
++#include "user.h"
++
++/* Possible states of a thread; */
++#define FREE        0x0
++#define RUNNING     0x1
++#define RUNNABLE    0x2
++
++#define STACK_SIZE  8192
++#define MAX_THREAD  4
++
++typedef struct thread thread_t, *thread_p;
++typedef struct mutex mutex_t, *mutex_p;
++
++struct thread {
++  int        sp;                /* saved stack pointer */
++  char stack[STACK_SIZE];       /* the thread's stack */
++  int        state;             /* FREE, RUNNING, RUNNABLE */
++};
++static thread_t all_thread[MAX_THREAD];
++thread_p  current_thread;
++thread_p  next_thread;
++extern void thread_switch(void);
++
++void 
++thread_init(void)
++{
++  // main() is thread 0, which will make the first invocation to
++  // thread_schedule().  it needs a stack so that the first thread_switch() can
++  // save thread 0's state.  thread_schedule() won't run the main thread ever
++  // again, because its state is set to RUNNING, and thread_schedule() selects
++  // a RUNNABLE thread.
++  current_thread = &all_thread[0];
++  current_thread->state = RUNNING;
++}
++
++static void 
++thread_schedule(void)
++{
++  thread_p t;
++
++  /* Find another runnable thread. */
++  next_thread = 0;
++  for (t = all_thread; t < all_thread + MAX_THREAD; t++) {
++    if (t->state == RUNNABLE && t != current_thread) {
++      next_thread = t;
++      break;
++    }
++  }
++
++  if (t >= all_thread + MAX_THREAD && current_thread->state == RUNNABLE) {
++    /* The current thread is the only runnable thread; run it. */
++    next_thread = current_thread;
++  }
++
++  if (next_thread == 0) {
++    printf(2, "thread_schedule: no runnable threads\n");
++    exit();
++  }
++
++  if (current_thread != next_thread) {         /* switch threads?  */
++    next_thread->state = RUNNING;
++    thread_switch();
++  } else
++    next_thread = 0;
++}
++
++void 
++thread_create(void (*func)())
++{
++  thread_p t;
++
++  for (t = all_thread; t < all_thread + MAX_THREAD; t++) {
++    if (t->state == FREE) break;
++  }
++  t->sp = (int) (t->stack + STACK_SIZE);   // set sp to the top of the stack
++  t->sp -= 4;                              // space for return address
++  * (int *) (t->sp) = (int)func;           // push return address on stack
++  t->sp -= 32;                             // space for registers that thread_switch expects
++  t->state = RUNNABLE;
++}
++
++void 
++thread_yield(void)
++{
++  current_thread->state = RUNNABLE;
++  thread_schedule();
++}
++
++static void 
++mythread(void)
++{
++  int i;
++  printf(1, "my thread running\n");
++  for (i = 0; i < 100; i++) {
++    printf(1, "my thread 0x%x\n", (int) current_thread);
++    thread_yield();
++  }
++  printf(1, "my thread: exit\n");
++  current_thread->state = FREE;
++  thread_schedule();
++}
++
++
++int 
++main(int argc, char *argv[]) 
++{
++  thread_init();
++  thread_create(mythread);
++  thread_create(mythread);
++  thread_schedule();
++  return 0;
++}
+diff --git a/uthread_switch.S b/uthread_switch.S
+new file mode 100644
+index 0000000..58148d3
+--- /dev/null
++++ b/uthread_switch.S
+@@ -0,0 +1,36 @@
++	.text
++
++/* Switch from current_thread to next_thread. Make next_thread
++ * the current_thread, and set next_thread to 0.
++ * Use eax as a temporary register; it is caller saved.
++ */
++	.globl thread_switch
++thread_switch:
++	/* YOUR CODE HERE */
++	pushal				# save registers
++	movl current_thread, %eax
++	movl %esp, (%eax)	# save current state in current_thread->sp
++
++	movl next_thread, %eax
++	movl (%eax), %esp	# update %esp with next_thread->sp
++	
++	# update the pointers
++	movl %eax, current_thread
++	movl $0, next_thread
++
++	popal				# restore registers
++	ret				/* pop return address from stack */
++
++/*
++(gdb) x/9x next_thread->sp
++0x6cf4 <all_thread+24532>:      0x00000000      0x00000000     0x00006d30       0x00006d14
++0x6d04 <all_thread+24548>:      0x0000005a      0x00004d30     0x0000000a       0x00002d28
++0x6d14 <all_thread+24564>:      0x00000179
++
++0x00000179 is the return address of caller of thread_switch (thread_schedule), during thread's
++running, when it calls into thread_schedule(), it will push 0x00000179 on the stack, then it
++drops into thread_switch(), push the 8 general registers (%eax, %ecx, %edx, %ebx, %esp, %ebp, %esi, %edi)
++
++ 174:	e8 27 ff ff ff       	call   a0 <thread_schedule>
++ 179:	83 c4 10             	add    $0x10,%esp
++*/
+\ No newline at end of file
+-- 
+2.20.1
+
