@@ -1,19 +1,19 @@
-From 3db9aa0d21a7d6cc9c50fd0d2ff4dba5a2e5a18c Mon Sep 17 00:00:00 2001
+From db607060bb3682a46442485e9c55ea4308c3bfb5 Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Mon, 3 Aug 2020 14:43:13 +0000
 Subject: [PATCH] support threading in process
 
 ---
- defs.h    |  1 +
- proc.c    | 76 +++++++++++++++++++++++++++++++++++++++++++++++++++++++
- proc.h    | 16 ++++++++++++
- syscall.c |  5 +++-
- syscall.h |  3 ++-
- sysproc.c | 23 +++++++++++++++++
- user.h    |  1 +
- usys.S    |  1 +
- uthread.c | 19 ++++++++++++++
- 9 files changed, 143 insertions(+), 2 deletions(-)
+ defs.h    |   1 +
+ proc.c    | 111 +++++++++++++++++++++++++++++++++++++++++++-----------
+ proc.h    |  16 ++++++++
+ syscall.c |   5 ++-
+ syscall.h |   3 +-
+ sysproc.c |  24 ++++++++++++
+ user.h    |   1 +
+ usys.S    |   1 +
+ uthread.c |  19 ++++++++++
+ 9 files changed, 158 insertions(+), 23 deletions(-)
 
 diff --git a/defs.h b/defs.h
 index 8627d58..6929dbc 100644
@@ -28,10 +28,10 @@ index 8627d58..6929dbc 100644
  // spinlock.c
  void acquire(struct spinlock *);
 diff --git a/proc.c b/proc.c
-index bf1fec1..607cf10 100644
+index bf1fec1..2492c4d 100644
 --- a/proc.c
 +++ b/proc.c
-@@ -102,10 +102,65 @@ found:
+@@ -102,10 +102,72 @@ found:
    p->alarmhandler = 0;
    p->alarmticks = 0;
    p->ticksleft = 0;
@@ -64,26 +64,33 @@ index bf1fec1..607cf10 100644
 +     return 0;
 +   }
 +
-+   esp = page + KSTACKSIZE - sizeof(thread);
-+   thread->thread_kstacktop = esp;
++   // allocate space for holding structure thread
++   esp = page + KSTACKSIZE - sizeof(struct thread);
 +   thread = (struct thread *)esp;
-+   thread->state = FREE;
-+   // we don't need a lock to update per process list
-+   thread->next = myproc()->thread;
-+   myproc()->thread = thread;
 +
-+   esp -= 4;
-+   *(uint *)esp = (uint)trapret;
++   thread->thread_kstacktop = esp;
++   thread->state = FREE;
++   thread->next = 0;
++   // we don't need a lock to update per process list
++   struct proc *p = myproc();
++   
++   // append the new thread to the end
++   struct thread **dumy_head = &(p->thread);
++   for (; *dumy_head != 0; dumy_head = &(*dumy_head)->next);
++   *dumy_head = thread;
 +
 +   // allocate for thread trapframe
 +   esp -= sizeof(struct trapframe);
 +   thread->thread_tf = (struct trapframe *)esp;
 +   memset(thread->thread_tf, 0, sizeof(struct trapframe));
-+   thread->thread_tf->cs = myproc()->tf->cs;
-+   thread->thread_tf->ds = myproc()->tf->ds;
-+   thread->thread_tf->es = myproc()->tf->es;
-+   thread->thread_tf->ss = myproc()->tf->ss;
-+   thread->thread_tf->eflags = myproc()->tf->eflags;
++   thread->thread_tf->cs = p->tf->cs;
++   thread->thread_tf->ds = p->tf->ds;
++   thread->thread_tf->es = p->tf->es;
++   thread->thread_tf->ss = p->tf->ss;
++   thread->thread_tf->eflags = p->tf->eflags;
++
++   esp -= 4;
++   *(uint *)esp = (uint)trapret;
 +   
 +   // allocate for kernel thread per user thread
 +   esp -= sizeof(struct context);
@@ -97,7 +104,7 @@ index bf1fec1..607cf10 100644
  // PAGEBREAK: 32
  // Set up first user process.
  void userinit(void) {
-@@ -123,6 +178,10 @@ void userinit(void) {
+@@ -123,6 +185,10 @@ void userinit(void) {
            (int)_binary_initcode_size); // now mapping self's content
    p->sz = PGSIZE;
    memset(p->tf, 0, sizeof(*p->tf));
@@ -108,7 +115,35 @@ index bf1fec1..607cf10 100644
    p->tf->cs = (SEG_UCODE << 3) | DPL_USER;
    p->tf->ds = (SEG_UDATA << 3) | DPL_USER;
    p->tf->es = p->tf->ds;
-@@ -318,6 +377,23 @@ void scheduler(void) {
+@@ -146,27 +212,6 @@ void userinit(void) {
+   release(&ptable.lock);
+ }
+ 
+-// Grow current process's memory by n bytes.
+-// Return 0 on success, -1 on failure.
+-// int
+-// growproc(int n)
+-// {
+-//   uint sz;
+-//   struct proc *curproc = myproc();
+-
+-//   sz = curproc->sz;
+-//   if(n > 0){
+-//     if((sz = allocuvm(curproc->pgdir, sz, sz + n)) == 0)
+-//       return -1;
+-//   } else if(n < 0){
+-//     if((sz = deallocuvm(curproc->pgdir, sz, sz + n)) == 0)
+-//       return -1;
+-//   }
+-//   curproc->sz = sz;
+-//   switchuvm(curproc);
+-//   return 0;
+-// }
+-
+ // Create a new process copying p as the parent.
+ // Sets up stack to return as if from system call.
+ // Caller must set state of returned proc to RUNNABLE.
+@@ -318,6 +363,30 @@ void scheduler(void) {
      // Loop over process table looking for process to run.
      acquire(&ptable.lock);
      for (p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
@@ -119,9 +154,16 @@ index bf1fec1..607cf10 100644
 +        //  {
 +            if (t && t->state == THD_RUNNABLE)
 +            {
++                cprintf("cpu %d picks one thread now\n", c->apicid);
 +                c->proc = p;
-+                switchuvm(p); // when running a thread, we actually run under this process context
++                pushcli();
++                c->gdt[SEG_TSS] = SEG16(STS_T32A, &c->ts, sizeof(c->ts) - 1, 0);
++                c->gdt[SEG_TSS].s = 0;
++                c->ts.ss0 = SEG_KDATA << 3;
 +                c->ts.esp0 = (uint)t->thread_kstacktop; // set the per thread's kernel stack
++                c->ts.iomb = (ushort)0xFFFF;
++                lcr3(V2P(p->pgdir));
++                popcli();
 +                t->state = THD_RUNNING;
 +                swtch(&(c->scheduler), t->thread_ctx);
 +                switchkvm();
@@ -217,10 +259,10 @@ index f1bcf02..d9f0fc7 100644
 +#define SYS_uthread_create 25
 \ No newline at end of file
 diff --git a/sysproc.c b/sysproc.c
-index 3d35ace..d330afd 100644
+index 3d35ace..e99f33b 100644
 --- a/sysproc.c
 +++ b/sysproc.c
-@@ -103,3 +103,26 @@ int sys_alarm(void) {
+@@ -103,3 +103,27 @@ int sys_alarm(void) {
    myproc()->ticksleft = ticks;
    return 0;
  }
@@ -244,6 +286,7 @@ index 3d35ace..d330afd 100644
 +   t->thread_tf->esp = (uint)esp;
 +
 +   //finally, mark this thread as runnable
++   // other CPU may pick this job
 +   t->state = THD_RUNNABLE;
 +   return 0;
 +}
