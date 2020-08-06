@@ -1,110 +1,84 @@
-From db607060bb3682a46442485e9c55ea4308c3bfb5 Mon Sep 17 00:00:00 2001
+From da862688b3ab0ae36feb8cc02b1b421be8c3e91e Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Mon, 3 Aug 2020 14:43:13 +0000
 Subject: [PATCH] support threading in process
 
+to the kernel, it only cares about task unit, in linux it is process
+
+user space threads within a process share code segment,
+static memory and heap (dynamic memory),
+but have separate processor registers sets and stacks.
 ---
- defs.h    |   1 +
- proc.c    | 111 +++++++++++++++++++++++++++++++++++++++++++-----------
- proc.h    |  16 ++++++++
- syscall.c |   5 ++-
- syscall.h |   3 +-
- sysproc.c |  24 ++++++++++++
- user.h    |   1 +
- usys.S    |   1 +
- uthread.c |  19 ++++++++++
- 9 files changed, 158 insertions(+), 23 deletions(-)
+ defs.h    |  1 +
+ proc.c    | 60 ++++++++++++++++++++++++++++++++++++-------------------
+ syscall.c |  5 ++++-
+ syscall.h |  3 ++-
+ sysproc.c | 18 +++++++++++++++++
+ user.h    |  1 +
+ usys.S    |  1 +
+ uthread.c | 21 ++++++++++++++++++-
+ vm.c      | 14 ++++++++++++-
+ 9 files changed, 99 insertions(+), 25 deletions(-)
 
 diff --git a/defs.h b/defs.h
-index 8627d58..6929dbc 100644
+index 8627d58..477b63d 100644
 --- a/defs.h
 +++ b/defs.h
 @@ -123,6 +123,7 @@ void yield(void);
  
  // swtch.S
  void swtch(struct context **, struct context *);
-+struct thread *allocthread(void);
++struct proc *allocthread(uint, uint);
  
  // spinlock.c
  void acquire(struct spinlock *);
 diff --git a/proc.c b/proc.c
-index bf1fec1..2492c4d 100644
+index bf1fec1..e776696 100644
 --- a/proc.c
 +++ b/proc.c
-@@ -102,10 +102,72 @@ found:
-   p->alarmhandler = 0;
-   p->alarmticks = 0;
-   p->ticksleft = 0;
-+  
-+  p->thread = 0;  // only main thread
- 
+@@ -106,6 +106,41 @@ found:
    return p;
  }
  
 +// create a new execute thread for a process
-+// return this thread if succeed
-+// return 0 for failure
-+//       |-----------------------|
-+//       |    struct thread      |
-+//esp,   |-----------------------|
-+//thread |      trap frame       |
-+//       |-----------------------|
-+//       |    thread context     |
-+//       |-----------------------|
-+//       |.........              |
-+//       |.......                |
-+//kstack     ......
-+struct thread *allocthread(void) {
-+   struct thread *thread;
-+   char *esp; // start of struct thread, start of kernel stack
-+   char *page;
++// we clone parent process and tweak the kernel
++// stack for the child, assign the same pid
++struct proc *allocthread(uint eip, uint esp) {
++   extern pde_t *cloneuvm(pde_t *pgdir, uint sz);
++   struct proc *curproc = myproc();
++   struct proc *child = allocproc();
++   if (!child)
++     return child;
 +
-+   if ((page = kalloc()) == 0) {
-+     cprintf("create thread failed, out of memory\n");
-+     return 0;
-+   }
-+
-+   // allocate space for holding structure thread
-+   esp = page + KSTACKSIZE - sizeof(struct thread);
-+   thread = (struct thread *)esp;
-+
-+   thread->thread_kstacktop = esp;
-+   thread->state = FREE;
-+   thread->next = 0;
-+   // we don't need a lock to update per process list
-+   struct proc *p = myproc();
++   // clone the child
++   child->pgdir = cloneuvm(curproc->pgdir, curproc->sz);
++   child->sz = curproc->sz;
 +   
-+   // append the new thread to the end
-+   struct thread **dumy_head = &(p->thread);
-+   for (; *dumy_head != 0; dumy_head = &(*dumy_head)->next);
-+   *dumy_head = thread;
++   // copy necessary segment registers and eflags
++   child->tf->cs = curproc->tf->cs;
++   child->tf->ds = curproc->tf->ds;
++   child->tf->es = curproc->tf->es;
++   child->tf->ss = curproc->tf->ss;
++   child->tf->fs = curproc->tf->fs;
++   child->tf->gs = curproc->tf->gs;
++   child->tf->eflags = curproc->tf->eflags;
 +
-+   // allocate for thread trapframe
-+   esp -= sizeof(struct trapframe);
-+   thread->thread_tf = (struct trapframe *)esp;
-+   memset(thread->thread_tf, 0, sizeof(struct trapframe));
-+   thread->thread_tf->cs = p->tf->cs;
-+   thread->thread_tf->ds = p->tf->ds;
-+   thread->thread_tf->es = p->tf->es;
-+   thread->thread_tf->ss = p->tf->ss;
-+   thread->thread_tf->eflags = p->tf->eflags;
++   child->tf->eip = eip;
++   child->tf->esp = esp;
 +
-+   esp -= 4;
-+   *(uint *)esp = (uint)trapret;
-+   
-+   // allocate for kernel thread per user thread
-+   esp -= sizeof(struct context);
-+   thread->thread_ctx = (struct context *)esp;
-+   memset(thread->thread_ctx, 0, sizeof(struct context));
-+   thread->thread_ctx->eip = (uint)forkret; // we rely on forkret to release the lock
++   acquire(&ptable.lock);
 +
-+   return thread;
++   child->state = RUNNABLE;
++
++   release(&ptable.lock);
++
++   return child;
 +}
 +
  // PAGEBREAK: 32
  // Set up first user process.
  void userinit(void) {
-@@ -123,6 +185,10 @@ void userinit(void) {
+@@ -123,6 +158,10 @@ void userinit(void) {
            (int)_binary_initcode_size); // now mapping self's content
    p->sz = PGSIZE;
    memset(p->tf, 0, sizeof(*p->tf));
@@ -115,7 +89,7 @@ index bf1fec1..2492c4d 100644
    p->tf->cs = (SEG_UCODE << 3) | DPL_USER;
    p->tf->ds = (SEG_UDATA << 3) | DPL_USER;
    p->tf->es = p->tf->ds;
-@@ -146,27 +212,6 @@ void userinit(void) {
+@@ -146,27 +185,6 @@ void userinit(void) {
    release(&ptable.lock);
  }
  
@@ -143,71 +117,6 @@ index bf1fec1..2492c4d 100644
  // Create a new process copying p as the parent.
  // Sets up stack to return as if from system call.
  // Caller must set state of returned proc to RUNNABLE.
-@@ -318,6 +363,30 @@ void scheduler(void) {
-     // Loop over process table looking for process to run.
-     acquire(&ptable.lock);
-     for (p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
-+      if (p->state == RUNNING)
-+      {
-+         struct thread *t = p->thread;
-+        //  while (t)
-+        //  {
-+            if (t && t->state == THD_RUNNABLE)
-+            {
-+                cprintf("cpu %d picks one thread now\n", c->apicid);
-+                c->proc = p;
-+                pushcli();
-+                c->gdt[SEG_TSS] = SEG16(STS_T32A, &c->ts, sizeof(c->ts) - 1, 0);
-+                c->gdt[SEG_TSS].s = 0;
-+                c->ts.ss0 = SEG_KDATA << 3;
-+                c->ts.esp0 = (uint)t->thread_kstacktop; // set the per thread's kernel stack
-+                c->ts.iomb = (ushort)0xFFFF;
-+                lcr3(V2P(p->pgdir));
-+                popcli();
-+                t->state = THD_RUNNING;
-+                swtch(&(c->scheduler), t->thread_ctx);
-+                switchkvm();
-+            }
-+        //     t = p->thread->next;
-+        //  }
-+      }
-       if (p->state != RUNNABLE)
-         continue;
- 
-diff --git a/proc.h b/proc.h
-index 654230b..5e8905a 100644
---- a/proc.h
-+++ b/proc.h
-@@ -10,6 +10,20 @@ struct cpu {
-   struct proc *proc;         // The process running on this cpu or null
- };
- 
-+// a thread is still considered running under its process context,
-+// so the trapframe is needed for returning to process context.
-+// do we need a kstack for each thread? Yeah, sure...
-+// we alloc a page and put thread struct into that page, let rest be the stack
-+enum threadstate {FREE, THD_RUNNING, THD_RUNNABLE};
-+struct thread {
-+   uint thread_id;
-+   enum threadstate state;
-+   struct thread *next;
-+   char *thread_kstacktop;
-+   struct trapframe *thread_tf;       // Trap frame for current syscall
-+   struct context *thread_ctx;    // swtch() here to run thread
-+};
-+
- extern struct cpu cpus[NCPU];
- extern int ncpu;
- 
-@@ -52,6 +66,8 @@ struct proc {
-   uint alarmticks;            // the interval per process alarm action
-   uint ticksleft;             // ticks left for another action, range: [0, alarmticks]
-   void (*alarmhandler)();     // the alarm handler
-+
-+  struct thread *thread;   // support secondary threads in process
- };
- 
- // Process memory is laid out contiguously, low addresses first:
 diff --git a/syscall.c b/syscall.c
 index 032695d..8ed28f4 100644
 --- a/syscall.c
@@ -259,10 +168,10 @@ index f1bcf02..d9f0fc7 100644
 +#define SYS_uthread_create 25
 \ No newline at end of file
 diff --git a/sysproc.c b/sysproc.c
-index 3d35ace..e99f33b 100644
+index 3d35ace..be80a75 100644
 --- a/sysproc.c
 +++ b/sysproc.c
-@@ -103,3 +103,27 @@ int sys_alarm(void) {
+@@ -103,3 +103,21 @@ int sys_alarm(void) {
    myproc()->ticksleft = ticks;
    return 0;
  }
@@ -278,16 +187,10 @@ index 3d35ace..e99f33b 100644
 +   if (argint(2, &esp) < 0)
 +     return -1;
 +   
-+   struct thread *t;
-+   if ((t= allocthread()) == 0)
++   struct proc *t;
++   if ((t= allocthread((uint)entry, esp)) == 0)
 +     return -1;
-+   t->thread_id = thread_id;
-+   t->thread_tf->eip = (uint)entry;
-+   t->thread_tf->esp = (uint)esp;
 +
-+   //finally, mark this thread as runnable
-+   // other CPU may pick this job
-+   t->state = THD_RUNNABLE;
 +   return 0;
 +}
 \ No newline at end of file
@@ -314,7 +217,7 @@ index 14f284b..5730172 100644
 +SYSCALL(uthread_create)
 \ No newline at end of file
 diff --git a/uthread.c b/uthread.c
-index 66fc1f8..54d1da0 100644
+index 66fc1f8..225c713 100644
 --- a/uthread.c
 +++ b/uthread.c
 @@ -35,6 +35,7 @@ thread_init(void)
@@ -357,6 +260,46 @@ index 66fc1f8..54d1da0 100644
  }
  
  void 
+@@ -108,7 +127,7 @@ main(int argc, char *argv[])
+ {
+   thread_init();
+   thread_create(mythread);
+-  thread_create(mythread);
++  // thread_create(mythread);
+   thread_schedule();
+   return 0;
+ }
+diff --git a/vm.c b/vm.c
+index f2c46d7..cf542c4 100644
+--- a/vm.c
++++ b/vm.c
+@@ -126,13 +126,25 @@ pde_t *setupkvm(void) {
+       int idx = PDX(k->virt) + i;
+       if (idx < NPDENTRIES)
+         pgdir[idx] = kpgdir[idx];
+-      // cprintf("index is %d\n", PDX(k->virt) + i);
+     }
+   }
+ 
+   return pgdir;
+ }
+ 
++// clone a child process by only copying page tables
++pde_t *cloneuvm(pde_t *pgdir, uint sz) {
++  pde_t *p;
++  if ((p = setupkvm()) == 0)
++    return 0;
++  sz = sz >> PDXSHIFT;
++  int i = 0;
++  for (; i <= sz; i++)
++    p[i] = pgdir[i];
++
++  return p;
++}
++
+ // Allocate one page table for the machine for the kernel address
+ // space for scheduler processes.
+ void kvmalloc(void) {
 -- 
 2.20.1
 
