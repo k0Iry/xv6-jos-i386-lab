@@ -1,4 +1,4 @@
-From 4e7711ad3c09b61f703433ac01f0de702dcf072d Mon Sep 17 00:00:00 2001
+From b5c52ad2bb7b50b43e4d43c1051c0f2cfb495c5c Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Mon, 3 Aug 2020 14:43:13 +0000
 Subject: [PATCH] support threading in process
@@ -14,11 +14,12 @@ but have separate processor registers sets and stacks.
  syscall.c |  6 ++++-
  syscall.h |  4 +++-
  sysproc.c | 20 ++++++++++++++++
+ trap.c    |  2 ++
  user.h    |  2 ++
  usys.S    |  2 ++
- uthread.c | 68 +++++++++++++++++++++++-----------------------------
+ uthread.c | 65 ++++++++++++++++++++++---------------------------
  vm.c      |  1 -
- 9 files changed, 113 insertions(+), 63 deletions(-)
+ 10 files changed, 113 insertions(+), 62 deletions(-)
 
 diff --git a/defs.h b/defs.h
 index 8627d58..6ca46df 100644
@@ -217,6 +218,19 @@ index 3d35ace..52fb0fb 100644
 +   return 0;
 +}
 \ No newline at end of file
+diff --git a/trap.c b/trap.c
+index 0df84cc..585e988 100644
+--- a/trap.c
++++ b/trap.c
+@@ -119,6 +119,8 @@ void trap(struct trapframe *tf) {
+     lapiceoi();
+     break;
+   case T_PGFLT: {
++    if (rcr2() == 0xffffffff)
++      exit();
+     if (rcr2() >= myproc()->sz) {
+       // we don't allocate new memory for exceeding process size
+       // if we implement malloc then I guess we do not need this condition
 diff --git a/user.h b/user.h
 index 859f982..2300a38 100644
 --- a/user.h
@@ -242,7 +256,7 @@ index 14f284b..da8ccab 100644
 +SYSCALL(sched_yield)
 \ No newline at end of file
 diff --git a/uthread.c b/uthread.c
-index 66fc1f8..7f670b9 100644
+index 66fc1f8..5fad39a 100644
 --- a/uthread.c
 +++ b/uthread.c
 @@ -35,37 +35,22 @@ thread_init(void)
@@ -340,16 +354,14 @@ index 66fc1f8..7f670b9 100644
  }
  
  
-@@ -109,6 +99,8 @@ main(int argc, char *argv[])
+@@ -109,6 +99,7 @@ main(int argc, char *argv[])
    thread_init();
    thread_create(mythread);
    thread_create(mythread);
 -  thread_schedule();
--  return 0;
 +  while (wait() != -1);
 +  printf(1, "all threads reaped.\n");
-+  // return 0;
-+  exit();
+   return 0;
  }
 diff --git a/vm.c b/vm.c
 index f2c46d7..cb9bbc1 100644
