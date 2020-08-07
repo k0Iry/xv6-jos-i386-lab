@@ -1,4 +1,4 @@
-From da862688b3ab0ae36feb8cc02b1b421be8c3e91e Mon Sep 17 00:00:00 2001
+From 58ed362b5f72ceba715982e65af2ff532d4828c9 Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Mon, 3 Aug 2020 14:43:13 +0000
 Subject: [PATCH] support threading in process
@@ -10,49 +10,51 @@ static memory and heap (dynamic memory),
 but have separate processor registers sets and stacks.
 ---
  defs.h    |  1 +
- proc.c    | 60 ++++++++++++++++++++++++++++++++++++-------------------
+ proc.c    | 62 ++++++++++++++++++++++++++++++++++++-------------------
  syscall.c |  5 ++++-
  syscall.h |  3 ++-
- sysproc.c | 18 +++++++++++++++++
+ sysproc.c | 18 ++++++++++++++++
  user.h    |  1 +
  usys.S    |  1 +
  uthread.c | 21 ++++++++++++++++++-
  vm.c      | 14 ++++++++++++-
- 9 files changed, 99 insertions(+), 25 deletions(-)
+ 9 files changed, 101 insertions(+), 25 deletions(-)
 
 diff --git a/defs.h b/defs.h
-index 8627d58..477b63d 100644
+index 8627d58..51f0558 100644
 --- a/defs.h
 +++ b/defs.h
 @@ -123,6 +123,7 @@ void yield(void);
  
  // swtch.S
  void swtch(struct context **, struct context *);
-+struct proc *allocthread(uint, uint);
++struct proc *clone(uint, uint);
  
  // spinlock.c
  void acquire(struct spinlock *);
 diff --git a/proc.c b/proc.c
-index bf1fec1..e776696 100644
+index bf1fec1..a0592cb 100644
 --- a/proc.c
 +++ b/proc.c
-@@ -106,6 +106,41 @@ found:
+@@ -106,6 +106,43 @@ found:
    return p;
  }
  
 +// create a new execute thread for a process
 +// we clone parent process and tweak the kernel
 +// stack for the child, assign the same pid
-+struct proc *allocthread(uint eip, uint esp) {
-+   extern pde_t *cloneuvm(pde_t *pgdir, uint sz);
++struct proc *clone(uint eip, uint esp) {
++   extern pde_t *clonevm(pde_t *pgdir, uint sz);
++
 +   struct proc *curproc = myproc();
 +   struct proc *child = allocproc();
 +   if (!child)
 +     return child;
 +
 +   // clone the child
-+   child->pgdir = cloneuvm(curproc->pgdir, curproc->sz);
++   child->pgdir = clonevm(curproc->pgdir, curproc->sz);
 +   child->sz = curproc->sz;
++   child->parent = curproc;
 +   
 +   // copy necessary segment registers and eflags
 +   child->tf->cs = curproc->tf->cs;
@@ -78,7 +80,7 @@ index bf1fec1..e776696 100644
  // PAGEBREAK: 32
  // Set up first user process.
  void userinit(void) {
-@@ -123,6 +158,10 @@ void userinit(void) {
+@@ -123,6 +160,10 @@ void userinit(void) {
            (int)_binary_initcode_size); // now mapping self's content
    p->sz = PGSIZE;
    memset(p->tf, 0, sizeof(*p->tf));
@@ -89,7 +91,7 @@ index bf1fec1..e776696 100644
    p->tf->cs = (SEG_UCODE << 3) | DPL_USER;
    p->tf->ds = (SEG_UDATA << 3) | DPL_USER;
    p->tf->es = p->tf->ds;
-@@ -146,27 +185,6 @@ void userinit(void) {
+@@ -146,27 +187,6 @@ void userinit(void) {
    release(&ptable.lock);
  }
  
@@ -118,14 +120,14 @@ index bf1fec1..e776696 100644
  // Sets up stack to return as if from system call.
  // Caller must set state of returned proc to RUNNABLE.
 diff --git a/syscall.c b/syscall.c
-index 032695d..8ed28f4 100644
+index 032695d..4d02ae1 100644
 --- a/syscall.c
 +++ b/syscall.c
 @@ -96,6 +96,7 @@ extern int sys_uptime(void);
  extern int sys_date(void);
  extern int sys_dup2(void);
  extern int sys_alarm(void);
-+extern int sys_create_thread(void);
++extern int sys_clone(void);
  
  // we register syscall interfaces here
  static int (*syscalls[])(void) = {
@@ -133,7 +135,7 @@ index 032695d..8ed28f4 100644
      [SYS_write] sys_write, [SYS_mknod] sys_mknod,   [SYS_unlink] sys_unlink,
      [SYS_link] sys_link,   [SYS_mkdir] sys_mkdir,   [SYS_close] sys_close,
      [SYS_date] sys_date,   [SYS_dup2] sys_dup2,     [SYS_alarm] sys_alarm,
-+    [SYS_uthread_create] sys_create_thread,
++    [SYS_clone] sys_clone,
  };
  
  // use a string table for the name, any better idea?
@@ -141,7 +143,7 @@ index 032695d..8ed28f4 100644
      [SYS_write] "write", [SYS_mknod] "mknod",   [SYS_unlink] "unlink",
      [SYS_link] "link",   [SYS_mkdir] "mkdir",   [SYS_close] "close",
      [SYS_date] "date",   [SYS_dup2] "dup2",     [SYS_alarm] "alarm",
-+    [SYS_uthread_create] "create_thread",
++    [SYS_clone] "clone",
  };
  
  // breakpoint here, x/37x
@@ -155,7 +157,7 @@ index 032695d..8ed28f4 100644
    } else {
      cprintf("%d %s: unknown sys call %d\n", curproc->pid, curproc->name, num);
 diff --git a/syscall.h b/syscall.h
-index f1bcf02..d9f0fc7 100644
+index f1bcf02..051f515 100644
 --- a/syscall.h
 +++ b/syscall.h
 @@ -22,4 +22,5 @@
@@ -165,10 +167,10 @@ index f1bcf02..d9f0fc7 100644
 -#define SYS_alarm 24
 \ No newline at end of file
 +#define SYS_alarm 24
-+#define SYS_uthread_create 25
++#define SYS_clone 25
 \ No newline at end of file
 diff --git a/sysproc.c b/sysproc.c
-index 3d35ace..be80a75 100644
+index 3d35ace..ca8e01e 100644
 --- a/sysproc.c
 +++ b/sysproc.c
 @@ -103,3 +103,21 @@ int sys_alarm(void) {
@@ -176,7 +178,7 @@ index 3d35ace..be80a75 100644
    return 0;
  }
 +
-+int sys_create_thread(void) {
++int sys_clone(void) {
 +   int thread_id;
 +   void (*entry)();
 +   int esp;
@@ -188,36 +190,36 @@ index 3d35ace..be80a75 100644
 +     return -1;
 +   
 +   struct proc *t;
-+   if ((t= allocthread((uint)entry, esp)) == 0)
++   if ((t= clone((uint)entry, esp)) == 0)
 +     return -1;
 +
 +   return 0;
 +}
 \ No newline at end of file
 diff --git a/user.h b/user.h
-index 859f982..04bda7b 100644
+index 859f982..8078167 100644
 --- a/user.h
 +++ b/user.h
 @@ -26,6 +26,7 @@ int sleep(int);
  int uptime(void);
  int date(struct rtcdate *);
  int alarm(uint, void (*)());
-+int uthread_create(uint, uint, uint);
++int clone(uint, uint, uint);
  
  // ulib.c
  int stat(const char *, struct stat *);
 diff --git a/usys.S b/usys.S
-index 14f284b..5730172 100644
+index 14f284b..9609de1 100644
 --- a/usys.S
 +++ b/usys.S
 @@ -33,3 +33,4 @@ SYSCALL(uptime)
  SYSCALL(date)
  SYSCALL(dup2)
  SYSCALL(alarm)
-+SYSCALL(uthread_create)
++SYSCALL(clone)
 \ No newline at end of file
 diff --git a/uthread.c b/uthread.c
-index 66fc1f8..225c713 100644
+index 66fc1f8..a33a467 100644
 --- a/uthread.c
 +++ b/uthread.c
 @@ -35,6 +35,7 @@ thread_init(void)
@@ -252,7 +254,7 @@ index 66fc1f8..225c713 100644
 +
 +  // make a system call, pass the thread_schedule() to the kernel,
 +  // let idle CPUs enter the scheduler
-+  if (uthread_create((uint)t, (uint)func, (uint)t->sp) != 0)
++  if (clone((uint)t, (uint)func, (uint)t->sp) != 0)
 +  {
 +     printf(2, "uthread_create syscall failed!\n");
 +     exit();
@@ -270,7 +272,7 @@ index 66fc1f8..225c713 100644
    return 0;
  }
 diff --git a/vm.c b/vm.c
-index f2c46d7..cf542c4 100644
+index f2c46d7..e8a2adf 100644
 --- a/vm.c
 +++ b/vm.c
 @@ -126,13 +126,25 @@ pde_t *setupkvm(void) {
@@ -285,7 +287,7 @@ index f2c46d7..cf542c4 100644
  }
  
 +// clone a child process by only copying page tables
-+pde_t *cloneuvm(pde_t *pgdir, uint sz) {
++pde_t *clonevm(pde_t *pgdir, uint sz) {
 +  pde_t *p;
 +  if ((p = setupkvm()) == 0)
 +    return 0;
