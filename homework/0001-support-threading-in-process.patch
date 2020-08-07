@@ -1,4 +1,4 @@
-From 58ed362b5f72ceba715982e65af2ff532d4828c9 Mon Sep 17 00:00:00 2001
+From e78de88ec7a27799b3caa510281e872191216025 Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Mon, 3 Aug 2020 14:43:13 +0000
 Subject: [PATCH] support threading in process
@@ -10,49 +10,47 @@ static memory and heap (dynamic memory),
 but have separate processor registers sets and stacks.
 ---
  defs.h    |  1 +
- proc.c    | 62 ++++++++++++++++++++++++++++++++++++-------------------
- syscall.c |  5 ++++-
- syscall.h |  3 ++-
- sysproc.c | 18 ++++++++++++++++
- user.h    |  1 +
- usys.S    |  1 +
- uthread.c | 21 ++++++++++++++++++-
- vm.c      | 14 ++++++++++++-
- 9 files changed, 101 insertions(+), 25 deletions(-)
+ proc.c    | 72 ++++++++++++++++++++++++++++++++++++++-----------------
+ syscall.c |  6 ++++-
+ syscall.h |  4 +++-
+ sysproc.c | 20 ++++++++++++++++
+ user.h    |  2 ++
+ usys.S    |  2 ++
+ uthread.c | 71 ++++++++++++++++++++----------------------------------
+ vm.c      |  1 -
+ 9 files changed, 109 insertions(+), 70 deletions(-)
 
 diff --git a/defs.h b/defs.h
-index 8627d58..51f0558 100644
+index 8627d58..6ca46df 100644
 --- a/defs.h
 +++ b/defs.h
 @@ -123,6 +123,7 @@ void yield(void);
  
  // swtch.S
  void swtch(struct context **, struct context *);
-+struct proc *clone(uint, uint);
++int clone(uint, uint);
  
  // spinlock.c
  void acquire(struct spinlock *);
 diff --git a/proc.c b/proc.c
-index bf1fec1..a0592cb 100644
+index bf1fec1..691f884 100644
 --- a/proc.c
 +++ b/proc.c
-@@ -106,6 +106,43 @@ found:
+@@ -106,6 +106,50 @@ found:
    return p;
  }
  
 +// create a new execute thread for a process
 +// we clone parent process and tweak the kernel
 +// stack for the child, assign the same pid
-+struct proc *clone(uint eip, uint esp) {
-+   extern pde_t *clonevm(pde_t *pgdir, uint sz);
-+
++int clone(uint eip, uint esp) {
 +   struct proc *curproc = myproc();
 +   struct proc *child = allocproc();
 +   if (!child)
-+     return child;
++     return 0;
 +
-+   // clone the child
-+   child->pgdir = clonevm(curproc->pgdir, curproc->sz);
++   // clone the child, share the address space
++   child->pgdir = curproc->pgdir;
 +   child->sz = curproc->sz;
 +   child->parent = curproc;
 +   
@@ -65,6 +63,15 @@ index bf1fec1..a0592cb 100644
 +   child->tf->gs = curproc->tf->gs;
 +   child->tf->eflags = curproc->tf->eflags;
 +
++   // inherit file descriptors as well
++   int i;
++   for (i = 0; i < NOFILE; i++)
++    if (curproc->ofile[i])
++      child->ofile[i] = filedup(curproc->ofile[i]);
++   child->cwd = idup(curproc->cwd);
++
++   // let new process (thread of execution) start running
++   // from new %eip and with new stack %esp
 +   child->tf->eip = eip;
 +   child->tf->esp = esp;
 +
@@ -74,13 +81,13 @@ index bf1fec1..a0592cb 100644
 +
 +   release(&ptable.lock);
 +
-+   return child;
++   return child->pid;
 +}
 +
  // PAGEBREAK: 32
  // Set up first user process.
  void userinit(void) {
-@@ -123,6 +160,10 @@ void userinit(void) {
+@@ -123,6 +167,10 @@ void userinit(void) {
            (int)_binary_initcode_size); // now mapping self's content
    p->sz = PGSIZE;
    memset(p->tf, 0, sizeof(*p->tf));
@@ -91,7 +98,7 @@ index bf1fec1..a0592cb 100644
    p->tf->cs = (SEG_UCODE << 3) | DPL_USER;
    p->tf->ds = (SEG_UDATA << 3) | DPL_USER;
    p->tf->es = p->tf->ds;
-@@ -146,27 +187,6 @@ void userinit(void) {
+@@ -146,27 +194,6 @@ void userinit(void) {
    release(&ptable.lock);
  }
  
@@ -119,35 +126,46 @@ index bf1fec1..a0592cb 100644
  // Create a new process copying p as the parent.
  // Sets up stack to return as if from system call.
  // Caller must set state of returned proc to RUNNABLE.
+@@ -276,7 +303,8 @@ int wait(void) {
+         pid = p->pid;
+         kfree(p->kstack);
+         p->kstack = 0;
+-        freevm(p->pgdir);
++        if (p->pgdir != p->parent->pgdir)
++          freevm(p->pgdir);
+         p->pid = 0;
+         p->parent = 0;
+         p->name[0] = 0;
 diff --git a/syscall.c b/syscall.c
-index 032695d..4d02ae1 100644
+index 032695d..3f4edde 100644
 --- a/syscall.c
 +++ b/syscall.c
-@@ -96,6 +96,7 @@ extern int sys_uptime(void);
+@@ -96,6 +96,8 @@ extern int sys_uptime(void);
  extern int sys_date(void);
  extern int sys_dup2(void);
  extern int sys_alarm(void);
 +extern int sys_clone(void);
++extern int sys_yield(void);
  
  // we register syscall interfaces here
  static int (*syscalls[])(void) = {
-@@ -107,6 +108,7 @@ static int (*syscalls[])(void) = {
+@@ -107,6 +109,7 @@ static int (*syscalls[])(void) = {
      [SYS_write] sys_write, [SYS_mknod] sys_mknod,   [SYS_unlink] sys_unlink,
      [SYS_link] sys_link,   [SYS_mkdir] sys_mkdir,   [SYS_close] sys_close,
      [SYS_date] sys_date,   [SYS_dup2] sys_dup2,     [SYS_alarm] sys_alarm,
-+    [SYS_clone] sys_clone,
++    [SYS_clone] sys_clone, [SYS_sched_yield] sys_yield,
  };
  
  // use a string table for the name, any better idea?
-@@ -120,6 +122,7 @@ static char *syscallnames[] = {
+@@ -120,6 +123,7 @@ static char *syscallnames[] = {
      [SYS_write] "write", [SYS_mknod] "mknod",   [SYS_unlink] "unlink",
      [SYS_link] "link",   [SYS_mkdir] "mkdir",   [SYS_close] "close",
      [SYS_date] "date",   [SYS_dup2] "dup2",     [SYS_alarm] "alarm",
-+    [SYS_clone] "clone",
++    [SYS_clone] "clone", [SYS_sched_yield] "yield",
  };
  
  // breakpoint here, x/37x
-@@ -164,7 +167,7 @@ void syscall(void) {
+@@ -164,7 +168,7 @@ void syscall(void) {
      //   cprintf("first argument: %s\n", argument);
  
      curproc->tf->eax = syscalls[num]();
@@ -157,10 +175,10 @@ index 032695d..4d02ae1 100644
    } else {
      cprintf("%d %s: unknown sys call %d\n", curproc->pid, curproc->name, num);
 diff --git a/syscall.h b/syscall.h
-index f1bcf02..051f515 100644
+index f1bcf02..8cee3ea 100644
 --- a/syscall.h
 +++ b/syscall.h
-@@ -22,4 +22,5 @@
+@@ -22,4 +22,6 @@
  #define SYS_close 21
  #define SYS_date 22
  #define SYS_dup2 23
@@ -168,72 +186,100 @@ index f1bcf02..051f515 100644
 \ No newline at end of file
 +#define SYS_alarm 24
 +#define SYS_clone 25
++#define SYS_sched_yield 26
 \ No newline at end of file
 diff --git a/sysproc.c b/sysproc.c
-index 3d35ace..ca8e01e 100644
+index 3d35ace..52fb0fb 100644
 --- a/sysproc.c
 +++ b/sysproc.c
-@@ -103,3 +103,21 @@ int sys_alarm(void) {
+@@ -103,3 +103,23 @@ int sys_alarm(void) {
    myproc()->ticksleft = ticks;
    return 0;
  }
 +
 +int sys_clone(void) {
-+   int thread_id;
 +   void (*entry)();
 +   int esp;
-+   if (argint(0, &thread_id) < 0)
++   if (argptr(0, (char **)&entry, 4) < 0)
 +     return -1;
-+   if (argptr(1, (char **)&entry, 4) < 0)
-+     return -1;
-+   if (argint(2, &esp) < 0)
++   if (argint(1, &esp) < 0)
 +     return -1;
 +   
-+   struct proc *t;
++   int t;
 +   if ((t= clone((uint)entry, esp)) == 0)
 +     return -1;
 +
 +   return 0;
 +}
++
++int sys_yield(void) {
++   yield();
++   return 0;
++}
 \ No newline at end of file
 diff --git a/user.h b/user.h
-index 859f982..8078167 100644
+index 859f982..2300a38 100644
 --- a/user.h
 +++ b/user.h
-@@ -26,6 +26,7 @@ int sleep(int);
+@@ -26,6 +26,8 @@ int sleep(int);
  int uptime(void);
  int date(struct rtcdate *);
  int alarm(uint, void (*)());
-+int clone(uint, uint, uint);
++int clone(uint, uint);
++int sched_yield();
  
  // ulib.c
  int stat(const char *, struct stat *);
 diff --git a/usys.S b/usys.S
-index 14f284b..9609de1 100644
+index 14f284b..da8ccab 100644
 --- a/usys.S
 +++ b/usys.S
-@@ -33,3 +33,4 @@ SYSCALL(uptime)
+@@ -33,3 +33,5 @@ SYSCALL(uptime)
  SYSCALL(date)
  SYSCALL(dup2)
  SYSCALL(alarm)
 +SYSCALL(clone)
++SYSCALL(sched_yield)
 \ No newline at end of file
 diff --git a/uthread.c b/uthread.c
-index 66fc1f8..a33a467 100644
+index 66fc1f8..49c1303 100644
 --- a/uthread.c
 +++ b/uthread.c
-@@ -35,6 +35,7 @@ thread_init(void)
+@@ -35,37 +35,16 @@ thread_init(void)
    current_thread->state = RUNNING;
  }
  
-+// make multiple CPUs enter the thread scheduler, pick the thread and run respectively
- static void 
- thread_schedule(void)
- {
-@@ -66,6 +67,16 @@ thread_schedule(void)
-     next_thread = 0;
- }
- 
+-static void 
+-thread_schedule(void)
+-{
+-  thread_p t;
+-
+-  /* Find another runnable thread. */
+-  next_thread = 0;
+-  for (t = all_thread; t < all_thread + MAX_THREAD; t++) {
+-    if (t->state == RUNNABLE && t != current_thread) {
+-      next_thread = t;
+-      break;
+-    }
+-  }
+-
+-  if (t >= all_thread + MAX_THREAD && current_thread->state == RUNNABLE) {
+-    /* The current thread is the only runnable thread; run it. */
+-    next_thread = current_thread;
+-  }
+-
+-  if (next_thread == 0) {
+-    printf(2, "thread_schedule: no runnable threads\n");
+-    exit();
+-  }
+-
+-  if (current_thread != next_thread) {         /* switch threads?  */
+-    next_thread->state = RUNNING;
+-    thread_switch();
+-  } else
+-    next_thread = 0;
+-}
+-
 +/*
 + once we create a thread, maybe we need to add it
 + to the group in the kernel, so the kernel could
@@ -247,14 +293,18 @@ index 66fc1f8..a33a467 100644
  void 
  thread_create(void (*func)())
  {
-@@ -79,6 +90,14 @@ thread_create(void (*func)())
-   * (int *) (t->sp) = (int)func;           // push return address on stack
-   t->sp -= 32;                             // space for registers that thread_switch expects
-   t->state = RUNNABLE;
+@@ -75,31 +54,33 @@ thread_create(void (*func)())
+     if (t->state == FREE) break;
+   }
+   t->sp = (int) (t->stack + STACK_SIZE);   // set sp to the top of the stack
+-  t->sp -= 4;                              // space for return address
+-  * (int *) (t->sp) = (int)func;           // push return address on stack
+-  t->sp -= 32;                             // space for registers that thread_switch expects
+-  t->state = RUNNABLE;
 +
-+  // make a system call, pass the thread_schedule() to the kernel,
-+  // let idle CPUs enter the scheduler
-+  if (clone((uint)t, (uint)func, (uint)t->sp) != 0)
++  // make a system call, pass the func() to the kernel,
++  // let idle CPUs run upon it
++  if (clone((uint)func, (uint)t->sp) != 0)
 +  {
 +     printf(2, "uthread_create syscall failed!\n");
 +     exit();
@@ -262,20 +312,47 @@ index 66fc1f8..a33a467 100644
  }
  
  void 
-@@ -108,7 +127,7 @@ main(int argc, char *argv[])
+ thread_yield(void)
  {
+-  current_thread->state = RUNNABLE;
+-  thread_schedule();
++  sched_yield();
+ }
+ 
+ static void 
+ mythread(void)
+ {
+-  int i;
++  // int i;
+   printf(1, "my thread running\n");
+-  for (i = 0; i < 100; i++) {
+-    printf(1, "my thread 0x%x\n", (int) current_thread);
+-    thread_yield();
+-  }
++  // for (i = 0; i < 100; i++) {
++  //   printf(1, "my thread 0x%x\n", (int) current_thread);
++  //   // thread_yield();
++  // }
+   printf(1, "my thread: exit\n");
+-  current_thread->state = FREE;
+-  thread_schedule();
++  exit();
+ }
+ 
+ 
+@@ -109,6 +90,6 @@ main(int argc, char *argv[])
    thread_init();
    thread_create(mythread);
--  thread_create(mythread);
-+  // thread_create(mythread);
-   thread_schedule();
+   thread_create(mythread);
+-  thread_schedule();
++  while (wait() != -1);
    return 0;
  }
 diff --git a/vm.c b/vm.c
-index f2c46d7..e8a2adf 100644
+index f2c46d7..cb9bbc1 100644
 --- a/vm.c
 +++ b/vm.c
-@@ -126,13 +126,25 @@ pde_t *setupkvm(void) {
+@@ -126,7 +126,6 @@ pde_t *setupkvm(void) {
        int idx = PDX(k->virt) + i;
        if (idx < NPDENTRIES)
          pgdir[idx] = kpgdir[idx];
@@ -283,25 +360,6 @@ index f2c46d7..e8a2adf 100644
      }
    }
  
-   return pgdir;
- }
- 
-+// clone a child process by only copying page tables
-+pde_t *clonevm(pde_t *pgdir, uint sz) {
-+  pde_t *p;
-+  if ((p = setupkvm()) == 0)
-+    return 0;
-+  sz = sz >> PDXSHIFT;
-+  int i = 0;
-+  for (; i <= sz; i++)
-+    p[i] = pgdir[i];
-+
-+  return p;
-+}
-+
- // Allocate one page table for the machine for the kernel address
- // space for scheduler processes.
- void kvmalloc(void) {
 -- 
 2.20.1
 
