@@ -1,4 +1,4 @@
-From e78de88ec7a27799b3caa510281e872191216025 Mon Sep 17 00:00:00 2001
+From 4e7711ad3c09b61f703433ac01f0de702dcf072d Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Mon, 3 Aug 2020 14:43:13 +0000
 Subject: [PATCH] support threading in process
@@ -16,9 +16,9 @@ but have separate processor registers sets and stacks.
  sysproc.c | 20 ++++++++++++++++
  user.h    |  2 ++
  usys.S    |  2 ++
- uthread.c | 71 ++++++++++++++++++++----------------------------------
+ uthread.c | 68 +++++++++++++++++++++++-----------------------------
  vm.c      |  1 -
- 9 files changed, 109 insertions(+), 70 deletions(-)
+ 9 files changed, 113 insertions(+), 63 deletions(-)
 
 diff --git a/defs.h b/defs.h
 index 8627d58..6ca46df 100644
@@ -242,16 +242,18 @@ index 14f284b..da8ccab 100644
 +SYSCALL(sched_yield)
 \ No newline at end of file
 diff --git a/uthread.c b/uthread.c
-index 66fc1f8..49c1303 100644
+index 66fc1f8..7f670b9 100644
 --- a/uthread.c
 +++ b/uthread.c
-@@ -35,37 +35,16 @@ thread_init(void)
+@@ -35,37 +35,22 @@ thread_init(void)
    current_thread->state = RUNNING;
  }
  
 -static void 
 -thread_schedule(void)
--{
++void
++thread_exit()
+ {
 -  thread_p t;
 -
 -  /* Find another runnable thread. */
@@ -278,8 +280,9 @@ index 66fc1f8..49c1303 100644
 -    thread_switch();
 -  } else
 -    next_thread = 0;
--}
--
++   exit();
+ }
+ 
 +/*
 + once we create a thread, maybe we need to add it
 + to the group in the kernel, so the kernel could
@@ -293,14 +296,17 @@ index 66fc1f8..49c1303 100644
  void 
  thread_create(void (*func)())
  {
-@@ -75,31 +54,33 @@ thread_create(void (*func)())
+@@ -75,17 +60,24 @@ thread_create(void (*func)())
      if (t->state == FREE) break;
    }
    t->sp = (int) (t->stack + STACK_SIZE);   // set sp to the top of the stack
 -  t->sp -= 4;                              // space for return address
 -  * (int *) (t->sp) = (int)func;           // push return address on stack
 -  t->sp -= 32;                             // space for registers that thread_switch expects
--  t->state = RUNNABLE;
++
++  t->sp -= 4;
++  *(int *)t->sp = (int)thread_exit;
+   t->state = RUNNABLE;
 +
 +  // make a system call, pass the func() to the kernel,
 +  // let idle CPUs run upon it
@@ -320,33 +326,30 @@ index 66fc1f8..49c1303 100644
  }
  
  static void 
- mythread(void)
- {
--  int i;
-+  // int i;
+@@ -94,12 +86,10 @@ mythread(void)
+   int i;
    printf(1, "my thread running\n");
--  for (i = 0; i < 100; i++) {
+   for (i = 0; i < 100; i++) {
 -    printf(1, "my thread 0x%x\n", (int) current_thread);
--    thread_yield();
--  }
-+  // for (i = 0; i < 100; i++) {
-+  //   printf(1, "my thread 0x%x\n", (int) current_thread);
-+  //   // thread_yield();
-+  // }
++    printf(1, "my thread 0x%x\n", getpid());
+     thread_yield();
+   }
    printf(1, "my thread: exit\n");
 -  current_thread->state = FREE;
 -  thread_schedule();
-+  exit();
  }
  
  
-@@ -109,6 +90,6 @@ main(int argc, char *argv[])
+@@ -109,6 +99,8 @@ main(int argc, char *argv[])
    thread_init();
    thread_create(mythread);
    thread_create(mythread);
 -  thread_schedule();
+-  return 0;
 +  while (wait() != -1);
-   return 0;
++  printf(1, "all threads reaped.\n");
++  // return 0;
++  exit();
  }
 diff --git a/vm.c b/vm.c
 index f2c46d7..cb9bbc1 100644
