@@ -1,0 +1,61 @@
+From f486da8c959dc058a26b0d27e114e032b8d5ebda Mon Sep 17 00:00:00 2001
+From: Aaron <kljsandjb@me.com>
+Date: Sun, 16 Aug 2020 08:44:20 +0000
+Subject: [PATCH] some comments of the exercises
+
+add "hlt" instruction to avoid 100% cpus usage
+note this needs interrupts enabled, otherwise cpus
+will not be woken up at all
+---
+ pipe.c | 8 ++++++++
+ proc.c | 8 ++++++++
+ 2 files changed, 16 insertions(+)
+
+diff --git a/pipe.c b/pipe.c
+index fdc819e..0d9e9b8 100644
+--- a/pipe.c
++++ b/pipe.c
+@@ -76,6 +76,14 @@ int pipewrite(struct pipe *p, char *addr, int n) {
+ 
+   acquire(&p->lock);
+   for (i = 0; i < n; i++) {
++    // needs to be "while" statement, consider this case:
++    // there are two processes p1, p2, trying to write at the same time,
++    // p1 is hit the full pipe condition and is sleeping and release lock
++    // p2 accidentally acquire the lock before reader and also sleep
++    // reader read m bytes out of pipe, and release the lock, then
++    // p1 & p2 are all wakeup, since now the pipe is not full, let's say 
++    // p1 write full of pipe and sleep, and p2 get the lock before reader
++    // and continue with line 94, override some data written by p1
+     while (p->nwrite == p->nread + PIPESIZE) { // DOC: pipewrite-full
+       if (p->readopen == 0 || myproc()->killed) {
+         release(&p->lock);
+diff --git a/proc.c b/proc.c
+index 691f884..3272d7d 100644
+--- a/proc.c
++++ b/proc.c
+@@ -266,6 +266,11 @@ void exit(void) {
+   acquire(&ptable.lock);
+ 
+   // Parent might be sleeping in wait().
++  // it is ok to wake up earlier, since parents
++  // need to acquire the lock to reap the child
++  // so until child is set to ZOMBIE and release
++  // the lock, parent won't actually do the job
++  // so no missed wake-up
+   wakeup1(curproc->parent);
+ 
+   // Pass abandoned children to init.
+@@ -342,6 +347,9 @@ void scheduler(void) {
+   for (;;) {
+     // Enable interrupts on this processor.
+     sti();
++    // must hlt with interrupts enabled, otherwise
++    // all cpus will not run at all
++    asm volatile("hlt");
+ 
+     // Loop over process table looking for process to run.
+     acquire(&ptable.lock);
+-- 
+2.20.1
+
