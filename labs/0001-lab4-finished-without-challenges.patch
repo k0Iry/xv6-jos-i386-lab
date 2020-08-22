@@ -1,4 +1,4 @@
-From f1757d48cb12396fb639459047aaa179f0a9b036 Mon Sep 17 00:00:00 2001
+From dc5d7352fbf17d038673eeffa4869126d3eb3243 Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Wed, 1 Jul 2020 19:51:32 +0000
 Subject: [PATCH] lab4 finished (without challenges)
@@ -6,24 +6,37 @@ Subject: [PATCH] lab4 finished (without challenges)
 adding ipc support
 correct round-robin algorithm
 ---
+ inc/mmu.h        |   1 +
  inc/trap.h       |   5 ++
- kern/env.c       |  19 +++++---
- kern/init.c      |  14 +++++-
+ kern/env.c       |  19 ++++---
+ kern/init.c      |  12 +++-
  kern/kernel.ld   |   1 -
- kern/monitor.c   |   6 +++
- kern/mpentry.S   |  30 ++++++++++++
- kern/pmap.c      |  59 +++++++++++++++++++-----
- kern/sched.c     |  18 +++++++-
- kern/syscall.c   | 136 +++++++++++++++++++++++++++++++++++++++++++++++++------
- kern/trap.c      |  81 ++++++++++++++++++++++++++++-----
- kern/trapentry.S |  25 ++++++++++
- lib/fork.c       |  79 ++++++++++++++++++++++++++++++--
- lib/ipc.c        |  29 ++++++++++--
- lib/pfentry.S    |  18 ++++++++
+ kern/monitor.c   |   6 ++
+ kern/mpentry.S   |  30 ++++++++++
+ kern/pmap.c      |  59 ++++++++++++++++----
+ kern/sched.c     |  18 +++++-
+ kern/syscall.c   | 141 ++++++++++++++++++++++++++++++++++++++++++-----
+ kern/trap.c      |  84 +++++++++++++++++++++++-----
+ kern/trapentry.S |  25 +++++++++
+ lib/fork.c       |  79 +++++++++++++++++++++++++-
+ lib/ipc.c        |  29 +++++++++-
+ lib/pfentry.S    |  11 ++++
  lib/pgfault.c    |   5 +-
- lib/syscall.c    |  25 +++++++---
- 16 files changed, 486 insertions(+), 64 deletions(-)
+ lib/syscall.c    |  25 ++++++---
+ 17 files changed, 485 insertions(+), 65 deletions(-)
 
+diff --git a/inc/mmu.h b/inc/mmu.h
+index 368e79c..a9c7241 100644
+--- a/inc/mmu.h
++++ b/inc/mmu.h
+@@ -149,6 +149,7 @@
+ #include <inc/types.h>
+ 
+ // Segment Descriptors
++// https://wiki.osdev.org/GDT
+ struct Segdesc {
+ 	unsigned sd_lim_15_0 : 16;  // Low bits of segment limit
+ 	unsigned sd_base_15_0 : 16; // Low bits of segment base address
 diff --git a/inc/trap.h b/inc/trap.h
 index b36aae3..63ffd22 100644
 --- a/inc/trap.h
@@ -104,7 +117,7 @@ index a15fd9b..e1019da 100644
  }
  
 diff --git a/kern/init.c b/kern/init.c
-index e5491ec..0a0faaa 100644
+index e5491ec..2572ff0 100644
 --- a/kern/init.c
 +++ b/kern/init.c
 @@ -43,6 +43,7 @@ i386_init(void)
@@ -115,11 +128,10 @@ index e5491ec..0a0faaa 100644
  
  	// Starting non-boot CPUs
  	boot_aps();
-@@ -52,7 +53,14 @@ i386_init(void)
+@@ -52,6 +53,13 @@ i386_init(void)
  	ENV_CREATE(TEST, ENV_TYPE_USER);
  #else
  	// Touch all you want.
--	ENV_CREATE(user_primes, ENV_TYPE_USER);
 +	ENV_CREATE(user_yield, ENV_TYPE_USER);
 +	ENV_CREATE(user_yield, ENV_TYPE_USER);
 +	ENV_CREATE(user_yield, ENV_TYPE_USER);
@@ -127,10 +139,9 @@ index e5491ec..0a0faaa 100644
 +	ENV_CREATE(user_yield, ENV_TYPE_USER);
 +	ENV_CREATE(user_yield, ENV_TYPE_USER);
 +	ENV_CREATE(user_yield, ENV_TYPE_USER);
-+	ENV_CREATE(user_yield, ENV_TYPE_USER);
+ 	ENV_CREATE(user_primes, ENV_TYPE_USER);
  #endif // TEST*
  
- 	// Schedule and run the first user environment!
 @@ -109,9 +117,11 @@ mp_main(void)
  	// only one CPU can enter the scheduler at a time!
  	//
@@ -340,7 +351,7 @@ index eb7d239..c2e22a7 100644
  			"va %08x\n", env->env_id, user_mem_check_addr);
  		env_destroy(env);	// may not return
 diff --git a/kern/sched.c b/kern/sched.c
-index f595bb1..9e464d7 100644
+index f595bb1..b622a7d 100644
 --- a/kern/sched.c
 +++ b/kern/sched.c
 @@ -14,6 +14,7 @@ sched_yield(void)
@@ -355,7 +366,7 @@ index f595bb1..9e464d7 100644
  	// below to halt the cpu.
  
  	// LAB 4: Your code here.
-+	int i = 0, curpos = 0, k = 0;
++	int i = 1, curpos = -1, k = 0;
 +	if (curenv)
 +		curpos = ENVX(curenv->env_id);
 +	for (; i < NENV; i++)
@@ -383,7 +394,7 @@ index f595bb1..9e464d7 100644
  		"hlt\n"
  		"jmp 1b\n"
 diff --git a/kern/syscall.c b/kern/syscall.c
-index 4e8145a..f19a51f 100644
+index 4e8145a..288752d 100644
 --- a/kern/syscall.c
 +++ b/kern/syscall.c
 @@ -22,12 +22,7 @@ sys_cputs(const char *s, size_t len)
@@ -511,7 +522,16 @@ index 4e8145a..f19a51f 100644
  }
  
  // Try to send 'value' to the target env 'envid'.
-@@ -247,7 +296,38 @@ static int
+@@ -243,11 +292,47 @@ sys_page_unmap(envid_t envid, void *va)
+ //		current environment's address space.
+ //	-E_NO_MEM if there's not enough memory to map srcva in envid's
+ //		address space.
++
++// to make ipc_send not in a loop, I think we need to implement a coroutine
++// to speed-up kernel tasks, e.g. if envid is not ready for recv, we may need
++// switch to scheduler and run other tasks, we can jump back later(but not in user
++// space, so we need to persist kernel stack for later use)
+ static int
  sys_ipc_try_send(envid_t envid, uint32_t value, void *srcva, unsigned perm)
  {
  	// LAB 4: Your code here.
@@ -551,7 +571,7 @@ index 4e8145a..f19a51f 100644
  }
  
  // Block until a value is ready.  Record that you want to receive
-@@ -265,7 +345,15 @@ static int
+@@ -265,7 +350,15 @@ static int
  sys_ipc_recv(void *dstva)
  {
  	// LAB 4: Your code here.
@@ -568,7 +588,7 @@ index 4e8145a..f19a51f 100644
  	return 0;
  }
  
-@@ -289,6 +377,24 @@ syscall(uint32_t syscallno, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4,
+@@ -289,6 +382,24 @@ syscall(uint32_t syscallno, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4,
  		return sys_getenvid();
  	case SYS_env_destroy:
  		return sys_env_destroy(a1);
@@ -594,14 +614,24 @@ index 4e8145a..f19a51f 100644
  	default:
  		return -E_INVAL;
 diff --git a/kern/trap.c b/kern/trap.c
-index 6dae2b4..59027a8 100644
+index 6dae2b4..f21350e 100644
 --- a/kern/trap.c
 +++ b/kern/trap.c
-@@ -73,12 +73,8 @@ void
+@@ -32,8 +32,6 @@ struct Pseudodesc idt_pd = {
+ 
+ typedef void (*trap_handler)(void);
+ 
+-extern trap_handler default_handlers[];
+-
+ static const char *trapname(int trapno)
+ {
+ 	static const char * const excnames[] = {
+@@ -73,12 +71,9 @@ void
  trap_init(void)
  {
  	extern struct Segdesc gdt[];
 -	extern void sysenter_handler();
++	extern trap_handler default_handlers[];
  
  	// LAB 3: Your code here.
 -	wrmsr(0x174, GD_KT, 0);		// set (CPL = 0) CS & SS
@@ -610,7 +640,7 @@ index 6dae2b4..59027a8 100644
  
  	int vector = 0;
  	for (; vector < 32; vector++)
-@@ -86,10 +82,14 @@ trap_init(void)
+@@ -86,10 +81,14 @@ trap_init(void)
  		// 0-31 for TRAPs
  		if (vector == T_BRKPT)
  		{
@@ -627,7 +657,7 @@ index 6dae2b4..59027a8 100644
  	}
  	for (; vector < 256; vector++)
  	{
-@@ -129,21 +129,27 @@ trap_init_percpu(void)
+@@ -129,21 +128,27 @@ trap_init_percpu(void)
  	// user space on that CPU.
  	//
  	// LAB 4: Your code here:
@@ -645,7 +675,7 @@ index 6dae2b4..59027a8 100644
 -	ts.ts_iomb = sizeof(struct Taskstate);
 +	thiscpu->cpu_ts.ts_esp0 = kstacktop_percpu;
 +	thiscpu->cpu_ts.ts_ss0 = GD_KD;
-+	// thiscpu->cpu_ts.ts_iomb = MMIOBASE; // how to initialize this io base?
++	thiscpu->cpu_ts.ts_iomb = (uint16_t)0xFFFF;
  
  	// Initialize the TSS slot of the gdt.
 -	gdt[GD_TSS0 >> 3] = SEG16(STS_T32A, (uint32_t) (&ts),
@@ -661,7 +691,7 @@ index 6dae2b4..59027a8 100644
  
  	// Load the IDT
  	lidt(&idt_pd);
-@@ -231,6 +237,19 @@ trap_dispatch(struct Trapframe *tf)
+@@ -231,6 +236,19 @@ trap_dispatch(struct Trapframe *tf)
  	// Handle clock interrupts. Don't forget to acknowledge the
  	// interrupt using lapic_eoi() before calling the scheduler!
  	// LAB 4: Your code here.
@@ -681,7 +711,7 @@ index 6dae2b4..59027a8 100644
  
  	// Unexpected trap: The user process or the kernel has a bug.
  	print_trapframe(tf);
-@@ -268,6 +287,15 @@ trap(struct Trapframe *tf)
+@@ -268,6 +286,15 @@ trap(struct Trapframe *tf)
  		// Acquire the big kernel lock before doing any
  		// serious kernel work.
  		// LAB 4: Your code here.
@@ -697,7 +727,7 @@ index 6dae2b4..59027a8 100644
  		assert(curenv);
  
  		// Garbage collect if current enviroment is a zombie
-@@ -352,7 +380,36 @@ page_fault_handler(struct Trapframe *tf)
+@@ -352,7 +379,36 @@ page_fault_handler(struct Trapframe *tf)
  	//   (the 'tf' variable points at 'curenv->env_tf').
  
  	// LAB 4: Your code here.
@@ -940,10 +970,10 @@ index 2e222b9..e05a1e3 100644
  
  // Find the first environment of the given type.  We'll use this to
 diff --git a/lib/pfentry.S b/lib/pfentry.S
-index f40aeeb..82919ac 100644
+index f40aeeb..5c99409 100644
 --- a/lib/pfentry.S
 +++ b/lib/pfentry.S
-@@ -65,18 +65,36 @@ _pgfault_upcall:
+@@ -65,18 +65,29 @@ _pgfault_upcall:
  	// ways as registers become unavailable as scratch space.
  	//
  	// LAB 4: Your code here.
@@ -957,14 +987,7 @@ index f40aeeb..82919ac 100644
  	// can no longer modify any general-purpose registers.
  	// LAB 4: Your code here.
 +	addl $8, %esp		# skip fault_va and error code
-+	popl %edi
-+	popl %esi
-+	popl %ebp
-+	addl $4, %esp		# skip reg_oesp
-+	popl %ebx
-+	popl %edx
-+	popl %ecx
-+	popl %eax
++	popal
 +	addl $4, %esp		# skip trap-time %eip
  
  	// Restore eflags from the stack.  After you do this, you can
@@ -1084,5 +1107,5 @@ index 3fa7936..a121d55 100644
  }
  
 -- 
-2.11.0
+2.20.1
 
