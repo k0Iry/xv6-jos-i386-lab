@@ -1,0 +1,181 @@
+From 578a59193bd5e59b47582c0ee23fadb3455d2962 Mon Sep 17 00:00:00 2001
+From: Aaron <kljsandjb@me.com>
+Date: Sun, 23 Aug 2020 14:22:13 +0000
+Subject: [PATCH] start with lab5
+
+---
+ fs/bc.c       | 13 ++++++++++++-
+ fs/fs.c       | 11 ++++++++++-
+ kern/env.c    |  4 +++-
+ lib/exit.c    |  2 +-
+ lib/fork.c    | 16 ++++++++--------
+ lib/pgfault.c |  4 ++--
+ 6 files changed, 36 insertions(+), 14 deletions(-)
+
+diff --git a/fs/bc.c b/fs/bc.c
+index e3922c4..c9ab106 100644
+--- a/fs/bc.c
++++ b/fs/bc.c
+@@ -48,6 +48,10 @@ bc_pgfault(struct UTrapframe *utf)
+ 	// the disk.
+ 	//
+ 	// LAB 5: you code here:
++	addr = ROUNDDOWN(addr, BLKSIZE);
++	if ((r = sys_page_alloc(0, addr, PTE_SYSCALL)) < 0)
++		panic("in bc_pgfault, sys_page_alloc: %e", r);
++	ide_read(blockno * BLKSIZE / SECTSIZE, addr, BLKSIZE / SECTSIZE);
+ 
+ 	// Clear the dirty bit for the disk block page since we just read the
+ 	// block from disk
+@@ -77,7 +81,14 @@ flush_block(void *addr)
+ 		panic("flush_block of bad va %08x", addr);
+ 
+ 	// LAB 5: Your code here.
+-	panic("flush_block not implemented");
++	if (va_is_mapped(addr) && va_is_dirty(addr))
++	{
++		addr = ROUNDDOWN(addr, BLKSIZE);
++		ide_write(blockno * BLKSIZE / SECTSIZE, addr, BLKSIZE / SECTSIZE);
++		int r;
++		if ((r = sys_page_map(0, addr, 0, addr, uvpt[PGNUM(addr)] & PTE_SYSCALL)) < 0)
++		    panic("in flush_block, sys_page_map: %e", r);
++	}
+ }
+ 
+ // Test that the block cache works, by smashing the superblock and
+diff --git a/fs/fs.c b/fs/fs.c
+index 45ecaf8..f70178f 100644
+--- a/fs/fs.c
++++ b/fs/fs.c
+@@ -62,7 +62,16 @@ alloc_block(void)
+ 	// super->s_nblocks blocks in the disk altogether.
+ 
+ 	// LAB 5: Your code here.
+-	panic("alloc_block not implemented");
++	// panic("alloc_block not implemented");
++	for (uint32_t i = 3; i < super->s_nblocks; i++)
++	{
++		if (block_is_free(i))
++		{
++			bitmap[i / 32] &= ~(1 << (i % 32));
++			flush_block(bitmap + i / 8);
++			return i;
++		}
++	}
+ 	return -E_NO_DISK;
+ }
+ 
+diff --git a/kern/env.c b/kern/env.c
+index 1ac611c..1f86f5e 100644
+--- a/kern/env.c
++++ b/kern/env.c
+@@ -274,7 +274,7 @@ env_alloc(struct Env **newenv_store, envid_t parent_id)
+ 	env_free_list = e->env_link;
+ 	*newenv_store = e;
+ 
+-	// cprintf("[%08x] new env %08x\n", curenv ? curenv->env_id : 0, e->env_id);
++	cprintf("[%08x] new env %08x\n", curenv ? curenv->env_id : 0, e->env_id);
+ 	return 0;
+ }
+ 
+@@ -420,6 +420,8 @@ env_create(uint8_t *binary, enum EnvType type)
+ 	if (env_alloc(&new_env, 0) != 0)
+ 		panic("env_alloc");
+ 	load_icode(new_env, binary);
++	if (type == ENV_TYPE_FS)
++		new_env->env_tf.tf_eflags |= FL_IOPL_3;
+ 	new_env->env_type = type;
+ }
+ 
+diff --git a/lib/exit.c b/lib/exit.c
+index cee3336..438fb5a 100644
+--- a/lib/exit.c
++++ b/lib/exit.c
+@@ -4,7 +4,7 @@
+ void
+ exit(void)
+ {
+-	close_all();
++	// close_all();
+ 	sys_env_destroy(0);
+ }
+ 
+diff --git a/lib/fork.c b/lib/fork.c
+index 3f19405..d19bf33 100644
+--- a/lib/fork.c
++++ b/lib/fork.c
+@@ -41,15 +41,15 @@ pgfault(struct UTrapframe *utf)
+ 	//   You should make three system calls.
+ 
+ 	// LAB 4: Your code here.
+-	envid_t envid = sys_getenvid();
++	// envid_t envid = sys_getenvid();
+ 	// cprintf("fault addr 0x%x, envid %x\n", addr, envid);
+ 	addr = ROUNDDOWN(addr, PGSIZE);	// page-size aligned
+ 
+-	if ((r = sys_page_alloc(envid, PFTEMP, PTE_P | PTE_U | PTE_W)) != 0)
++	if ((r = sys_page_alloc(0, PFTEMP, PTE_SYSCALL)) != 0)
+ 		panic("sys_page_alloc, %e", r);
+ 	memmove((void *)PFTEMP, addr, PGSIZE);
+ 	// remap the addr with newly allocated writable page
+-	if  ((r = sys_page_map(envid, PFTEMP, envid, addr, PTE_P | PTE_U | PTE_W)) != 0)
++	if  ((r = sys_page_map(0, PFTEMP, 0, addr, PTE_SYSCALL)) != 0)
+ 		panic("sys_page_map, %e, fault addr 0x%x", r, addr);
+ }
+ 
+@@ -71,7 +71,7 @@ duppage(envid_t envid, unsigned pn)
+ 
+ 	// LAB 4: Your code here.
+ 	int perm = PTE_P | PTE_U;	// at least PTE_P and PTE_U
+-	envid_t curenvid = sys_getenvid();
++	// envid_t curenvid = sys_getenvid();
+ 
+ 	int is_wr = (uvpt[pn] & PTE_W) == PTE_W;
+ 	int is_cow = (uvpt[pn] & PTE_COW) == PTE_COW;
+@@ -79,15 +79,15 @@ duppage(envid_t envid, unsigned pn)
+ 	if (is_wr || is_cow)
+ 	{
+ 		// create new mapping
+-		if ((r = sys_page_map(curenvid, addr, envid, addr, perm | PTE_COW)) != 0)
++		if ((r = sys_page_map(0, addr, envid, addr, perm | PTE_COW)) != 0)
+ 			panic("sys_page_map, %e", r);
+-		if ((r = sys_page_map(curenvid, addr, curenvid, addr, perm | PTE_COW)) != 0)
++		if ((r = sys_page_map(0, addr, 0, addr, perm | PTE_COW)) != 0)
+ 			panic("sys_page_map, %e", r);
+ 	}
+ 	else
+ 	{
+ 		// only remap child without PTE_COW
+-		if ((r = sys_page_map(curenvid, addr, envid, addr, perm)) != 0)
++		if ((r = sys_page_map(0, addr, envid, addr, perm)) != 0)
+ 			panic("sys_page_map, %e", r);
+ 	}
+ 	return 0;
+@@ -133,7 +133,7 @@ fork(void)
+ 	// because the child's pgdir doesn't map any page for (USTACKTOP - PGSIZE)
+ 	// set_pgfault_handler(pgfault);
+ 
+-	if ((r = sys_page_alloc(child, (void *)(UXSTACKTOP - PGSIZE), PTE_P | PTE_U | PTE_W)) != 0)
++	if ((r = sys_page_alloc(child, (void *)(UXSTACKTOP - PGSIZE), PTE_SYSCALL)) != 0)
+ 		panic("sys_page_alloc, %e", r);
+ 	extern void _pgfault_upcall(void);
+ 	if ((r = sys_env_set_pgfault_upcall(child, _pgfault_upcall)) != 0)
+diff --git a/lib/pgfault.c b/lib/pgfault.c
+index 0cb1b33..ab0138d 100644
+--- a/lib/pgfault.c
++++ b/lib/pgfault.c
+@@ -29,9 +29,9 @@ set_pgfault_handler(void (*handler)(struct UTrapframe *utf))
+ 	if (_pgfault_handler == 0) {
+ 		// First time through!
+ 		// LAB 4: Your code here.
+-		if ((r = sys_page_alloc(sys_getenvid(), (void *)(UXSTACKTOP - PGSIZE), PTE_P | PTE_U | PTE_W)) != 0)
++		if ((r = sys_page_alloc(0, (void *)(UXSTACKTOP - PGSIZE), PTE_P | PTE_U | PTE_W)) != 0)
+ 			panic("sys_page_alloc, %e", r);
+-		if ((r = sys_env_set_pgfault_upcall(sys_getenvid(), _pgfault_upcall)) != 0)
++		if ((r = sys_env_set_pgfault_upcall(0, _pgfault_upcall)) != 0)
+ 			panic("sys_env_set_pgfault_upcall, %e", r);
+ 	}
+ 
+-- 
+2.20.1
+
