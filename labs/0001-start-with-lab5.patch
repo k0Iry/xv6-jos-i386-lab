@@ -1,20 +1,20 @@
-From 074556f50736d561596e2ec84b9afd24af4ded6f Mon Sep 17 00:00:00 2001
+From ca022027c374a6ebb95c42263a53bc48e5aa40bb Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Sun, 23 Aug 2020 14:22:13 +0000
 Subject: [PATCH] start with lab5
 
-finished with test.c file
-finished testfile.c except for large file
+finished with test.c
+finished testfile.c
 ---
  fs/bc.c       | 13 +++++++++-
  fs/fs.c       | 72 +++++++++++++++++++++++++++++++++++++++++++++++----
- fs/serv.c     | 21 +++++++++++++--
+ fs/serv.c     | 22 ++++++++++++++--
  kern/env.c    |  4 ++-
  lib/exit.c    |  2 +-
  lib/file.c    | 12 ++++++++-
  lib/fork.c    | 16 ++++++------
  lib/pgfault.c |  4 +--
- 8 files changed, 123 insertions(+), 21 deletions(-)
+ 8 files changed, 124 insertions(+), 21 deletions(-)
 
 diff --git a/fs/bc.c b/fs/bc.c
 index e3922c4..c9ab106 100644
@@ -145,10 +145,10 @@ index 45ecaf8..dbd3e02 100644
  
  // Try to find a file named "name" in dir.  If so, set *file to it.
 diff --git a/fs/serv.c b/fs/serv.c
-index 76c1d99..a43bdf2 100644
+index 76c1d99..ff26e35 100644
 --- a/fs/serv.c
 +++ b/fs/serv.c
-@@ -214,7 +214,15 @@ serve_read(envid_t envid, union Fsipc *ipc)
+@@ -214,7 +214,16 @@ serve_read(envid_t envid, union Fsipc *ipc)
  		cprintf("serve_read %08x %08x %08x\n", envid, req->req_fileid, req->req_n);
  
  	// Lab 5: Your code here:
@@ -160,12 +160,13 @@ index 76c1d99..a43bdf2 100644
 +	
 +	if ((r = file_read(o->o_file, ret->ret_buf, req->req_n, o->o_fd->fd_offset)) < 0)
 +		return r;
-+	seek(fd2num(o->o_fd), r);
++
++	o->o_fd->fd_offset += r;
 +	return r;
  }
  
  
-@@ -229,7 +237,16 @@ serve_write(envid_t envid, struct Fsreq_write *req)
+@@ -229,7 +238,16 @@ serve_write(envid_t envid, struct Fsreq_write *req)
  		cprintf("serve_write %08x %08x %08x\n", envid, req->req_fileid, req->req_n);
  
  	// LAB 5: Your code here.
@@ -177,8 +178,8 @@ index 76c1d99..a43bdf2 100644
 +	
 +	if ((r = file_write(o->o_file, req->req_buf, req->req_n, o->o_fd->fd_offset)) < 0)
 +		return r;
-+	
-+	seek(fd2num(o->o_fd), r);
++
++	o->o_fd->fd_offset += r;
 +	return r;
  }
  
