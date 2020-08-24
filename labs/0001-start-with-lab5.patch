@@ -1,17 +1,20 @@
-From e476abc2b1a1d7bda6a67d2f9a43256621395f2b Mon Sep 17 00:00:00 2001
+From 074556f50736d561596e2ec84b9afd24af4ded6f Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Sun, 23 Aug 2020 14:22:13 +0000
 Subject: [PATCH] start with lab5
 
 finished with test.c file
+finished testfile.c except for large file
 ---
- fs/bc.c       | 13 ++++++++-
- fs/fs.c       | 74 +++++++++++++++++++++++++++++++++++++++++++++++----
+ fs/bc.c       | 13 +++++++++-
+ fs/fs.c       | 72 +++++++++++++++++++++++++++++++++++++++++++++++----
+ fs/serv.c     | 21 +++++++++++++--
  kern/env.c    |  4 ++-
  lib/exit.c    |  2 +-
- lib/fork.c    | 16 +++++------
+ lib/file.c    | 12 ++++++++-
+ lib/fork.c    | 16 ++++++------
  lib/pgfault.c |  4 +--
- 6 files changed, 95 insertions(+), 18 deletions(-)
+ 8 files changed, 123 insertions(+), 21 deletions(-)
 
 diff --git a/fs/bc.c b/fs/bc.c
 index e3922c4..c9ab106 100644
@@ -45,7 +48,7 @@ index e3922c4..c9ab106 100644
  
  // Test that the block cache works, by smashing the superblock and
 diff --git a/fs/fs.c b/fs/fs.c
-index 45ecaf8..c519de3 100644
+index 45ecaf8..dbd3e02 100644
 --- a/fs/fs.c
 +++ b/fs/fs.c
 @@ -62,7 +62,16 @@ alloc_block(void)
@@ -108,7 +111,7 @@ index 45ecaf8..c519de3 100644
  }
  
  // Set *blk to the address in memory where the filebno'th
-@@ -149,8 +189,32 @@ file_block_walk(struct File *f, uint32_t filebno, uint32_t **ppdiskbno, bool all
+@@ -149,8 +189,30 @@ file_block_walk(struct File *f, uint32_t filebno, uint32_t **ppdiskbno, bool all
  int
  file_get_block(struct File *f, uint32_t filebno, char **blk)
  {
@@ -120,7 +123,7 @@ index 45ecaf8..c519de3 100644
 +	int r = 0;
 +	uint32_t *ppdiskbno;
 +	if ((r = file_block_walk(f, filebno, &ppdiskbno, true)) < 0)
-+		return r;	
++		return r;
 +	if (blk)
 +	{
 +		if (*ppdiskbno != 0)
@@ -134,15 +137,52 @@ index 45ecaf8..c519de3 100644
 +			return blkno;
 +		// update the entry
 +		*ppdiskbno = (uint32_t)blkno;
-+		void *addr = diskaddr(*ppdiskbno);
-+		memset(addr, 0, BLKSIZE);
-+		*blk = addr;
++		*blk = diskaddr(*ppdiskbno);
 +	}
 +
 +	return 0;
  }
  
  // Try to find a file named "name" in dir.  If so, set *file to it.
+diff --git a/fs/serv.c b/fs/serv.c
+index 76c1d99..a43bdf2 100644
+--- a/fs/serv.c
++++ b/fs/serv.c
+@@ -214,7 +214,15 @@ serve_read(envid_t envid, union Fsipc *ipc)
+ 		cprintf("serve_read %08x %08x %08x\n", envid, req->req_fileid, req->req_n);
+ 
+ 	// Lab 5: Your code here:
+-	return 0;
++	int r;
++	struct OpenFile *o;
++	if ((r = openfile_lookup(envid, req->req_fileid, &o)) < 0)
++		return r;
++	
++	if ((r = file_read(o->o_file, ret->ret_buf, req->req_n, o->o_fd->fd_offset)) < 0)
++		return r;
++	seek(fd2num(o->o_fd), r);
++	return r;
+ }
+ 
+ 
+@@ -229,7 +237,16 @@ serve_write(envid_t envid, struct Fsreq_write *req)
+ 		cprintf("serve_write %08x %08x %08x\n", envid, req->req_fileid, req->req_n);
+ 
+ 	// LAB 5: Your code here.
+-	panic("serve_write not implemented");
++	int r;
++	struct OpenFile *o;
++	if ((r = openfile_lookup(envid, req->req_fileid, &o)) < 0)
++		return r;
++	
++	if ((r = file_write(o->o_file, req->req_buf, req->req_n, o->o_fd->fd_offset)) < 0)
++		return r;
++	
++	seek(fd2num(o->o_fd), r);
++	return r;
+ }
+ 
+ // Stat ipc->stat.req_fileid.  Return the file's struct Stat to the
 diff --git a/kern/env.c b/kern/env.c
 index 1ac611c..1f86f5e 100644
 --- a/kern/env.c
@@ -178,6 +218,29 @@ index cee3336..438fb5a 100644
  	sys_env_destroy(0);
  }
  
+diff --git a/lib/file.c b/lib/file.c
+index 39025b2..7697693 100644
+--- a/lib/file.c
++++ b/lib/file.c
+@@ -141,7 +141,17 @@ devfile_write(struct Fd *fd, const void *buf, size_t n)
+ 	// remember that write is always allowed to write *fewer*
+ 	// bytes than requested.
+ 	// LAB 5: Your code here
+-	panic("devfile_write not implemented");
++	int r;
++
++	fsipcbuf.write.req_fileid = fd->fd_file.id;
++	fsipcbuf.write.req_n = n;
++	memmove(fsipcbuf.write.req_buf, buf, n);
++	if ((r = fsipc(FSREQ_WRITE, NULL)) < 0)
++		return r;
++
++	assert(r <= n);
++	assert(r <= sizeof(fsipcbuf.write.req_buf));
++	return r;
+ }
+ 
+ static int
 diff --git a/lib/fork.c b/lib/fork.c
 index 3f19405..d19bf33 100644
 --- a/lib/fork.c
