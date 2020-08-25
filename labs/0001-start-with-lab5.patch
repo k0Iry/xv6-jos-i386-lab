@@ -1,20 +1,22 @@
-From ca022027c374a6ebb95c42263a53bc48e5aa40bb Mon Sep 17 00:00:00 2001
+From 57b56fb6923d34c587fbb4fdf7520d050b4d40dc Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Sun, 23 Aug 2020 14:22:13 +0000
 Subject: [PATCH] start with lab5
 
 finished with test.c
 finished testfile.c
+adding some comments
 ---
- fs/bc.c       | 13 +++++++++-
- fs/fs.c       | 72 +++++++++++++++++++++++++++++++++++++++++++++++----
- fs/serv.c     | 22 ++++++++++++++--
+ fs/bc.c       | 13 ++++++++-
+ fs/fs.c       | 74 +++++++++++++++++++++++++++++++++++++++++++++++----
+ fs/serv.c     | 22 +++++++++++++--
  kern/env.c    |  4 ++-
+ kern/trap.c   | 11 ++++++++
  lib/exit.c    |  2 +-
  lib/file.c    | 12 ++++++++-
- lib/fork.c    | 16 ++++++------
+ lib/fork.c    | 16 +++++------
  lib/pgfault.c |  4 +--
- 8 files changed, 124 insertions(+), 21 deletions(-)
+ 9 files changed, 137 insertions(+), 21 deletions(-)
 
 diff --git a/fs/bc.c b/fs/bc.c
 index e3922c4..c9ab106 100644
@@ -48,7 +50,7 @@ index e3922c4..c9ab106 100644
  
  // Test that the block cache works, by smashing the superblock and
 diff --git a/fs/fs.c b/fs/fs.c
-index 45ecaf8..dbd3e02 100644
+index 45ecaf8..04b02e8 100644
 --- a/fs/fs.c
 +++ b/fs/fs.c
 @@ -62,7 +62,16 @@ alloc_block(void)
@@ -144,6 +146,15 @@ index 45ecaf8..dbd3e02 100644
  }
  
  // Try to find a file named "name" in dir.  If so, set *file to it.
+@@ -173,6 +235,8 @@ dir_lookup(struct File *dir, const char *name, struct File **file)
+ 	for (i = 0; i < nblock; i++) {
+ 		if ((r = file_get_block(dir, i, &blk)) < 0)
+ 			return r;
++		// file system interprets the contents of a directory-file as a series of File structures,
++		// describing the files and subdirectories within the directory.
+ 		f = (struct File*) blk;
+ 		for (j = 0; j < BLKFILES; j++)
+ 			if (strcmp(f[j].f_name, name) == 0) {
 diff --git a/fs/serv.c b/fs/serv.c
 index 76c1d99..ff26e35 100644
 --- a/fs/serv.c
@@ -206,6 +217,28 @@ index 1ac611c..1f86f5e 100644
  	new_env->env_type = type;
  }
  
+diff --git a/kern/trap.c b/kern/trap.c
+index 5f110a7..cff4268 100644
+--- a/kern/trap.c
++++ b/kern/trap.c
+@@ -310,6 +310,17 @@ trap(struct Trapframe *tf)
+ 		// Copy trap frame (which is currently on the stack)
+ 		// into 'curenv->env_tf', so that running the environment
+ 		// will restart at the trap point.
++
++		// The reason for this copy: difference from xv6
++		// in xv6, each process(env) has its own kernel stack, so each process(env) can
++		// always rely on its own stack even during task switch, since task switch always switch kernel stack.
++
++		// But in JOS here, each CPU got its own kernel stack instead of each process(env), process(env) only keeps a
++		// *snapshot* of trapframe when it gets trapped into the kernel, so that kernel
++		// can freely do task switch without worrying about the stack switch (we do switch always in env_run()).
++		// If we don't do this copy, only keep the pointer, when a timer interrupt comes in, the kernel stack would be
++		// replaced with another process's state, once we re-run the previous one, it will use the state from another
++		// process(env), which definitely is wrong!
+ 		curenv->env_tf = *tf;
+ 		// The trapframe on the stack should be ignored from here on.
+ 		tf = &curenv->env_tf;
 diff --git a/lib/exit.c b/lib/exit.c
 index cee3336..438fb5a 100644
 --- a/lib/exit.c
