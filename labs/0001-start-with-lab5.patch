@@ -1,4 +1,4 @@
-From 57b56fb6923d34c587fbb4fdf7520d050b4d40dc Mon Sep 17 00:00:00 2001
+From 23b814f4cee36b8c700d601184ef66ab09ee670c Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Sun, 23 Aug 2020 14:22:13 +0000
 Subject: [PATCH] start with lab5
@@ -6,17 +6,21 @@ Subject: [PATCH] start with lab5
 finished with test.c
 finished testfile.c
 adding some comments
+finished exercise 7
 ---
- fs/bc.c       | 13 ++++++++-
- fs/fs.c       | 74 +++++++++++++++++++++++++++++++++++++++++++++++----
- fs/serv.c     | 22 +++++++++++++--
- kern/env.c    |  4 ++-
- kern/trap.c   | 11 ++++++++
- lib/exit.c    |  2 +-
- lib/file.c    | 12 ++++++++-
- lib/fork.c    | 16 +++++------
- lib/pgfault.c |  4 +--
- 9 files changed, 137 insertions(+), 21 deletions(-)
+ fs/bc.c        | 13 ++++++++-
+ fs/fs.c        | 74 ++++++++++++++++++++++++++++++++++++++++++++++----
+ fs/serv.c      | 22 +++++++++++++--
+ kern/env.c     |  4 ++-
+ kern/init.c    |  3 +-
+ kern/syscall.c | 13 ++++++++-
+ kern/trap.c    | 11 ++++++++
+ lib/exit.c     |  2 +-
+ lib/file.c     | 12 +++++++-
+ lib/fork.c     | 16 +++++------
+ lib/pgfault.c  |  4 +--
+ lib/spawn.c    |  2 +-
+ 12 files changed, 152 insertions(+), 24 deletions(-)
 
 diff --git a/fs/bc.c b/fs/bc.c
 index e3922c4..c9ab106 100644
@@ -50,7 +54,7 @@ index e3922c4..c9ab106 100644
  
  // Test that the block cache works, by smashing the superblock and
 diff --git a/fs/fs.c b/fs/fs.c
-index 45ecaf8..04b02e8 100644
+index 45ecaf8..fc85af4 100644
 --- a/fs/fs.c
 +++ b/fs/fs.c
 @@ -62,7 +62,16 @@ alloc_block(void)
@@ -64,7 +68,7 @@ index 45ecaf8..04b02e8 100644
 +		if (block_is_free(i))
 +		{
 +			bitmap[i / 32] &= ~(1 << (i % 32));
-+			flush_block(bitmap + i / 8);
++			flush_block(bitmap);
 +			return i;
 +		}
 +	}
@@ -217,6 +221,51 @@ index 1ac611c..1f86f5e 100644
  	new_env->env_type = type;
  }
  
+diff --git a/kern/init.c b/kern/init.c
+index 91ae9e1..1f4c4ad 100644
+--- a/kern/init.c
++++ b/kern/init.c
+@@ -56,7 +56,8 @@ i386_init(void)
+ 	ENV_CREATE(TEST, ENV_TYPE_USER);
+ #else
+ 	// Touch all you want.
+-	ENV_CREATE(user_icode, ENV_TYPE_USER);
++	// ENV_CREATE(user_icode, ENV_TYPE_USER);
++	ENV_CREATE(user_spawnhello, ENV_TYPE_USER);
+ #endif // TEST*
+ 
+ 	// Should not be necessary - drains keyboard because interrupt has given up.
+diff --git a/kern/syscall.c b/kern/syscall.c
+index a9e6d38..5abaaa1 100644
+--- a/kern/syscall.c
++++ b/kern/syscall.c
+@@ -134,7 +134,16 @@ sys_env_set_trapframe(envid_t envid, struct Trapframe *tf)
+ 	// LAB 5: Your code here.
+ 	// Remember to check whether the user has supplied us with a good
+ 	// address!
+-	panic("sys_env_set_trapframe not implemented");
++	int ret = 0;
++	struct Env *env = NULL;
++	if ((ret = envid2env(envid, &env, 1)) != 0)
++		return ret;
++
++	// copy the trapframe
++	env->env_tf = *tf;
++	env->env_tf.tf_cs |= 3;
++	env->env_tf.tf_eflags |= (FL_IF | FL_IOPL_0);
++	return 0;
+ }
+ 
+ // Set the page fault upcall for 'envid' by modifying the corresponding struct
+@@ -404,6 +413,8 @@ syscall(uint32_t syscallno, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4,
+ 		return sys_exofork();
+ 	case SYS_env_set_status:
+ 		return sys_env_set_status(a1, a2);
++	case SYS_env_set_trapframe:
++		return sys_env_set_trapframe(a1, (struct Trapframe *)a2);
+ 	case SYS_env_set_pgfault_upcall:
+ 		return sys_env_set_pgfault_upcall(a1, (void *)a2);
+ 	case SYS_yield:
 diff --git a/kern/trap.c b/kern/trap.c
 index 5f110a7..cff4268 100644
 --- a/kern/trap.c
@@ -351,6 +400,19 @@ index 0cb1b33..ab0138d 100644
  			panic("sys_env_set_pgfault_upcall, %e", r);
  	}
  
+diff --git a/lib/spawn.c b/lib/spawn.c
+index 9d0eb07..4afbf83 100644
+--- a/lib/spawn.c
++++ b/lib/spawn.c
+@@ -270,7 +270,7 @@ map_segment(envid_t child, uintptr_t va, size_t memsz,
+ 	//cprintf("map_segment %x+%x\n", va, memsz);
+ 
+ 	if ((i = PGOFF(va))) {
+-		va -= i;
++		va -= i;		// ROUNDDOWN
+ 		memsz += i;
+ 		filesz += i;
+ 		fileoffset -= i;
 -- 
 2.20.1
 
