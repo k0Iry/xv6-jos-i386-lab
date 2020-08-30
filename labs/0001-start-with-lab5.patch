@@ -1,4 +1,4 @@
-From 23b814f4cee36b8c700d601184ef66ab09ee670c Mon Sep 17 00:00:00 2001
+From c5e10cdcacc20c14d03f790894b8cc47f6714273 Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Sun, 23 Aug 2020 14:22:13 +0000
 Subject: [PATCH] start with lab5
@@ -13,14 +13,14 @@ finished exercise 7
  fs/serv.c      | 22 +++++++++++++--
  kern/env.c     |  4 ++-
  kern/init.c    |  3 +-
- kern/syscall.c | 13 ++++++++-
+ kern/syscall.c | 14 +++++++++-
  kern/trap.c    | 11 ++++++++
  lib/exit.c     |  2 +-
  lib/file.c     | 12 +++++++-
- lib/fork.c     | 16 +++++------
+ lib/fork.c     | 18 ++++++------
  lib/pgfault.c  |  4 +--
- lib/spawn.c    |  2 +-
- 12 files changed, 152 insertions(+), 24 deletions(-)
+ lib/spawn.c    | 15 +++++++++-
+ 12 files changed, 168 insertions(+), 24 deletions(-)
 
 diff --git a/fs/bc.c b/fs/bc.c
 index e3922c4..c9ab106 100644
@@ -236,10 +236,10 @@ index 91ae9e1..1f4c4ad 100644
  
  	// Should not be necessary - drains keyboard because interrupt has given up.
 diff --git a/kern/syscall.c b/kern/syscall.c
-index a9e6d38..5abaaa1 100644
+index a9e6d38..ac69679 100644
 --- a/kern/syscall.c
 +++ b/kern/syscall.c
-@@ -134,7 +134,16 @@ sys_env_set_trapframe(envid_t envid, struct Trapframe *tf)
+@@ -134,7 +134,17 @@ sys_env_set_trapframe(envid_t envid, struct Trapframe *tf)
  	// LAB 5: Your code here.
  	// Remember to check whether the user has supplied us with a good
  	// address!
@@ -250,14 +250,15 @@ index a9e6d38..5abaaa1 100644
 +		return ret;
 +
 +	// copy the trapframe
++	user_mem_assert(env, tf, sizeof(struct Trapframe), PTE_U);
 +	env->env_tf = *tf;
-+	env->env_tf.tf_cs |= 3;
++	env->env_tf.tf_cs = GD_UT | 3;
 +	env->env_tf.tf_eflags |= (FL_IF | FL_IOPL_0);
 +	return 0;
  }
  
  // Set the page fault upcall for 'envid' by modifying the corresponding struct
-@@ -404,6 +413,8 @@ syscall(uint32_t syscallno, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4,
+@@ -404,6 +414,8 @@ syscall(uint32_t syscallno, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4,
  		return sys_exofork();
  	case SYS_env_set_status:
  		return sys_env_set_status(a1, a2);
@@ -325,10 +326,10 @@ index 39025b2..7697693 100644
  
  static int
 diff --git a/lib/fork.c b/lib/fork.c
-index 3f19405..d19bf33 100644
+index 3f19405..65f4acd 100644
 --- a/lib/fork.c
 +++ b/lib/fork.c
-@@ -41,15 +41,15 @@ pgfault(struct UTrapframe *utf)
+@@ -41,16 +41,18 @@ pgfault(struct UTrapframe *utf)
  	//   You should make three system calls.
  
  	// LAB 4: Your code here.
@@ -343,11 +344,14 @@ index 3f19405..d19bf33 100644
  	memmove((void *)PFTEMP, addr, PGSIZE);
  	// remap the addr with newly allocated writable page
 -	if  ((r = sys_page_map(envid, PFTEMP, envid, addr, PTE_P | PTE_U | PTE_W)) != 0)
-+	if  ((r = sys_page_map(0, PFTEMP, 0, addr, PTE_SYSCALL)) != 0)
++	if ((r = sys_page_map(0, PFTEMP, 0, addr, PTE_SYSCALL)) != 0)
  		panic("sys_page_map, %e, fault addr 0x%x", r, addr);
++	if ((r = sys_page_unmap(0, PFTEMP)) != 0)
++		panic("sys_page_unmap, %e", r);
  }
  
-@@ -71,7 +71,7 @@ duppage(envid_t envid, unsigned pn)
+ //
+@@ -71,7 +73,7 @@ duppage(envid_t envid, unsigned pn)
  
  	// LAB 4: Your code here.
  	int perm = PTE_P | PTE_U;	// at least PTE_P and PTE_U
@@ -356,7 +360,7 @@ index 3f19405..d19bf33 100644
  
  	int is_wr = (uvpt[pn] & PTE_W) == PTE_W;
  	int is_cow = (uvpt[pn] & PTE_COW) == PTE_COW;
-@@ -79,15 +79,15 @@ duppage(envid_t envid, unsigned pn)
+@@ -79,15 +81,15 @@ duppage(envid_t envid, unsigned pn)
  	if (is_wr || is_cow)
  	{
  		// create new mapping
@@ -375,7 +379,7 @@ index 3f19405..d19bf33 100644
  			panic("sys_page_map, %e", r);
  	}
  	return 0;
-@@ -133,7 +133,7 @@ fork(void)
+@@ -133,7 +135,7 @@ fork(void)
  	// because the child's pgdir doesn't map any page for (USTACKTOP - PGSIZE)
  	// set_pgfault_handler(pgfault);
  
@@ -401,10 +405,30 @@ index 0cb1b33..ab0138d 100644
  	}
  
 diff --git a/lib/spawn.c b/lib/spawn.c
-index 9d0eb07..4afbf83 100644
+index 9d0eb07..8fb8876 100644
 --- a/lib/spawn.c
 +++ b/lib/spawn.c
-@@ -270,7 +270,7 @@ map_segment(envid_t child, uintptr_t va, size_t memsz,
+@@ -11,6 +11,19 @@ static int map_segment(envid_t child, uintptr_t va, size_t memsz,
+ 		       int fd, size_t filesz, off_t fileoffset, int perm);
+ static int copy_shared_pages(envid_t child);
+ 
++/****
++Think about what you would have to do in order to implement exec in user space,
++and be sure you understand why it is harder.
++
++Well, if we're going to implement some routine like 'exec', one big prerequsite
++is that we need to make sure we run under current process's context. Then it needs
++to find someway to replace itself with new binary image file, which means we have
++to be in the kernel mode to do that, otherwise how to maintain the correctness
++during the procedure of replacing? Then we need to of course update our page tables
++with newly added physical memory pages for new image, and also be sure to free the
++old image's physical memory occupation
++*****/
++
+ // Spawn a child process from a program image loaded from the file system.
+ // prog: the pathname of the program to run.
+ // argv: pointer to null-terminated array of pointers to strings,
+@@ -270,7 +283,7 @@ map_segment(envid_t child, uintptr_t va, size_t memsz,
  	//cprintf("map_segment %x+%x\n", va, memsz);
  
  	if ((i = PGOFF(va))) {
