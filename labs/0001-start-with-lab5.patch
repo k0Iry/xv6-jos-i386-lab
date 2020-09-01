@@ -1,4 +1,4 @@
-From c5e10cdcacc20c14d03f790894b8cc47f6714273 Mon Sep 17 00:00:00 2001
+From 9acf44a9e94afcdc558aaa3235a530322b693b47 Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Sun, 23 Aug 2020 14:22:13 +0000
 Subject: [PATCH] start with lab5
@@ -7,20 +7,23 @@ finished with test.c
 finished testfile.c
 adding some comments
 finished exercise 7
+finished exercise 8 (be careful with PTE_AVAIL, it will enable the page
+sharing)
 ---
  fs/bc.c        | 13 ++++++++-
  fs/fs.c        | 74 ++++++++++++++++++++++++++++++++++++++++++++++----
- fs/serv.c      | 22 +++++++++++++--
+ fs/serv.c      | 24 ++++++++++++++--
+ inc/mmu.h      |  1 +
  kern/env.c     |  4 ++-
  kern/init.c    |  3 +-
- kern/syscall.c | 14 +++++++++-
+ kern/syscall.c | 15 +++++++++-
  kern/trap.c    | 11 ++++++++
  lib/exit.c     |  2 +-
  lib/file.c     | 12 +++++++-
- lib/fork.c     | 18 ++++++------
+ lib/fork.c     | 26 +++++++++++-------
  lib/pgfault.c  |  4 +--
- lib/spawn.c    | 15 +++++++++-
- 12 files changed, 168 insertions(+), 24 deletions(-)
+ lib/spawn.c    | 29 +++++++++++++++++++-
+ 13 files changed, 192 insertions(+), 26 deletions(-)
 
 diff --git a/fs/bc.c b/fs/bc.c
 index e3922c4..c9ab106 100644
@@ -160,10 +163,19 @@ index 45ecaf8..fc85af4 100644
  		for (j = 0; j < BLKFILES; j++)
  			if (strcmp(f[j].f_name, name) == 0) {
 diff --git a/fs/serv.c b/fs/serv.c
-index 76c1d99..ff26e35 100644
+index 76c1d99..55269c9 100644
 --- a/fs/serv.c
 +++ b/fs/serv.c
-@@ -214,7 +214,16 @@ serve_read(envid_t envid, union Fsipc *ipc)
+@@ -70,6 +70,8 @@ openfile_alloc(struct OpenFile **o)
+ 	for (i = 0; i < MAXOPEN; i++) {
+ 		switch (pageref(opentab[i].o_fd)) {
+ 		case 0:
++			// fd page will be actually copy-on-write once after fork
++			// we need to correct this in our fork
+ 			if ((r = sys_page_alloc(0, opentab[i].o_fd, PTE_P|PTE_U|PTE_W)) < 0)
+ 				return r;
+ 			/* fall through */
+@@ -214,7 +216,16 @@ serve_read(envid_t envid, union Fsipc *ipc)
  		cprintf("serve_read %08x %08x %08x\n", envid, req->req_fileid, req->req_n);
  
  	// Lab 5: Your code here:
@@ -181,7 +193,7 @@ index 76c1d99..ff26e35 100644
  }
  
  
-@@ -229,7 +238,16 @@ serve_write(envid_t envid, struct Fsreq_write *req)
+@@ -229,7 +240,16 @@ serve_write(envid_t envid, struct Fsreq_write *req)
  		cprintf("serve_write %08x %08x %08x\n", envid, req->req_fileid, req->req_n);
  
  	// LAB 5: Your code here.
@@ -199,6 +211,18 @@ index 76c1d99..ff26e35 100644
  }
  
  // Stat ipc->stat.req_fileid.  Return the file's struct Stat to the
+diff --git a/inc/mmu.h b/inc/mmu.h
+index a9c7241..10207bd 100644
+--- a/inc/mmu.h
++++ b/inc/mmu.h
+@@ -67,6 +67,7 @@
+ 
+ // The PTE_AVAIL bits aren't used by the kernel or interpreted by the
+ // hardware, so user processes are allowed to set them arbitrarily.
++// including PTE_SHARE 0x400
+ #define PTE_AVAIL	0xE00	// Available for software use
+ 
+ // Flags in PTE_SYSCALL may be used in system calls.  (Others may not.)
 diff --git a/kern/env.c b/kern/env.c
 index 1ac611c..1f86f5e 100644
 --- a/kern/env.c
@@ -236,10 +260,10 @@ index 91ae9e1..1f4c4ad 100644
  
  	// Should not be necessary - drains keyboard because interrupt has given up.
 diff --git a/kern/syscall.c b/kern/syscall.c
-index a9e6d38..ac69679 100644
+index a9e6d38..c2a27db 100644
 --- a/kern/syscall.c
 +++ b/kern/syscall.c
-@@ -134,7 +134,17 @@ sys_env_set_trapframe(envid_t envid, struct Trapframe *tf)
+@@ -134,7 +134,18 @@ sys_env_set_trapframe(envid_t envid, struct Trapframe *tf)
  	// LAB 5: Your code here.
  	// Remember to check whether the user has supplied us with a good
  	// address!
@@ -253,12 +277,13 @@ index a9e6d38..ac69679 100644
 +	user_mem_assert(env, tf, sizeof(struct Trapframe), PTE_U);
 +	env->env_tf = *tf;
 +	env->env_tf.tf_cs = GD_UT | 3;
-+	env->env_tf.tf_eflags |= (FL_IF | FL_IOPL_0);
++	env->env_tf.tf_eflags |= FL_IF;
++	env->env_tf.tf_eflags &= ~FL_IOPL_MASK;
 +	return 0;
  }
  
  // Set the page fault upcall for 'envid' by modifying the corresponding struct
-@@ -404,6 +414,8 @@ syscall(uint32_t syscallno, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4,
+@@ -404,6 +415,8 @@ syscall(uint32_t syscallno, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4,
  		return sys_exofork();
  	case SYS_env_set_status:
  		return sys_env_set_status(a1, a2);
@@ -326,9 +351,23 @@ index 39025b2..7697693 100644
  
  static int
 diff --git a/lib/fork.c b/lib/fork.c
-index 3f19405..65f4acd 100644
+index 3f19405..ce606d6 100644
 --- a/lib/fork.c
 +++ b/lib/fork.c
+@@ -27,11 +27,11 @@ pgfault(struct UTrapframe *utf)
+ 	// LAB 4: Your code here.
+ 	if ((err & FEC_WR) != FEC_WR)
+ 	{
+-		panic("Access is not writing, err code %d\n", err);
++		panic("Access to addr 0x%x is not writing, err code %d\n", addr, err);
+ 	}
+ 	if ((uvpt[PGNUM(addr)] & PTE_COW) != PTE_COW)
+ 	{
+-		panic("Fault address not marked as Copy-on-Write");
++		panic("Fault address 0x%x not marked as Copy-on-Write", addr);
+ 	}
+ 
+ 	// Allocate a new page, map it at a temporary location (PFTEMP),
 @@ -41,16 +41,18 @@ pgfault(struct UTrapframe *utf)
  	//   You should make three system calls.
  
@@ -339,19 +378,19 @@ index 3f19405..65f4acd 100644
  	addr = ROUNDDOWN(addr, PGSIZE);	// page-size aligned
  
 -	if ((r = sys_page_alloc(envid, PFTEMP, PTE_P | PTE_U | PTE_W)) != 0)
-+	if ((r = sys_page_alloc(0, PFTEMP, PTE_SYSCALL)) != 0)
++	if ((r = sys_page_alloc(0, PFTEMP, PTE_P | PTE_U | PTE_W)) != 0)
  		panic("sys_page_alloc, %e", r);
  	memmove((void *)PFTEMP, addr, PGSIZE);
  	// remap the addr with newly allocated writable page
 -	if  ((r = sys_page_map(envid, PFTEMP, envid, addr, PTE_P | PTE_U | PTE_W)) != 0)
-+	if ((r = sys_page_map(0, PFTEMP, 0, addr, PTE_SYSCALL)) != 0)
++	if ((r = sys_page_map(0, PFTEMP, 0, addr, PTE_P | PTE_U | PTE_W)) != 0)
  		panic("sys_page_map, %e, fault addr 0x%x", r, addr);
 +	if ((r = sys_page_unmap(0, PFTEMP)) != 0)
 +		panic("sys_page_unmap, %e", r);
  }
  
  //
-@@ -71,7 +73,7 @@ duppage(envid_t envid, unsigned pn)
+@@ -71,23 +73,27 @@ duppage(envid_t envid, unsigned pn)
  
  	// LAB 4: Your code here.
  	int perm = PTE_P | PTE_U;	// at least PTE_P and PTE_U
@@ -360,8 +399,11 @@ index 3f19405..65f4acd 100644
  
  	int is_wr = (uvpt[pn] & PTE_W) == PTE_W;
  	int is_cow = (uvpt[pn] & PTE_COW) == PTE_COW;
-@@ -79,15 +81,15 @@ duppage(envid_t envid, unsigned pn)
- 	if (is_wr || is_cow)
++	int is_shared = (uvpt[pn] & PTE_SHARE);
++
+ 	void *addr = (void *)(pn * PGSIZE);
+-	if (is_wr || is_cow)
++	if ((is_wr || is_cow) && !is_shared)
  	{
  		// create new mapping
 -		if ((r = sys_page_map(curenvid, addr, envid, addr, perm | PTE_COW)) != 0)
@@ -373,21 +415,14 @@ index 3f19405..65f4acd 100644
  	}
  	else
  	{
++		if (is_shared)
++			perm = PTE_SYSCALL & uvpt[pn];
  		// only remap child without PTE_COW
 -		if ((r = sys_page_map(curenvid, addr, envid, addr, perm)) != 0)
 +		if ((r = sys_page_map(0, addr, envid, addr, perm)) != 0)
  			panic("sys_page_map, %e", r);
  	}
  	return 0;
-@@ -133,7 +135,7 @@ fork(void)
- 	// because the child's pgdir doesn't map any page for (USTACKTOP - PGSIZE)
- 	// set_pgfault_handler(pgfault);
- 
--	if ((r = sys_page_alloc(child, (void *)(UXSTACKTOP - PGSIZE), PTE_P | PTE_U | PTE_W)) != 0)
-+	if ((r = sys_page_alloc(child, (void *)(UXSTACKTOP - PGSIZE), PTE_SYSCALL)) != 0)
- 		panic("sys_page_alloc, %e", r);
- 	extern void _pgfault_upcall(void);
- 	if ((r = sys_env_set_pgfault_upcall(child, _pgfault_upcall)) != 0)
 diff --git a/lib/pgfault.c b/lib/pgfault.c
 index 0cb1b33..ab0138d 100644
 --- a/lib/pgfault.c
@@ -405,7 +440,7 @@ index 0cb1b33..ab0138d 100644
  	}
  
 diff --git a/lib/spawn.c b/lib/spawn.c
-index 9d0eb07..8fb8876 100644
+index 9d0eb07..1e27ded 100644
 --- a/lib/spawn.c
 +++ b/lib/spawn.c
 @@ -11,6 +11,19 @@ static int map_segment(envid_t child, uintptr_t va, size_t memsz,
@@ -437,6 +472,27 @@ index 9d0eb07..8fb8876 100644
  		memsz += i;
  		filesz += i;
  		fileoffset -= i;
+@@ -302,6 +315,20 @@ static int
+ copy_shared_pages(envid_t child)
+ {
+ 	// LAB 5: Your code here.
++	int r;
++	void *addr = 0;
++	for (uint32_t i = 0; i < UTOP / PGSIZE; i ++)
++	{
++		addr = (void *)(i * PGSIZE);
++		if ((uvpd[PDX(addr)] & PTE_P) && (uvpt[i] & PTE_P))
++		{
++			if (uvpt[i] & PTE_SHARE)
++			{
++				if ((r = sys_page_map(0, addr, child, addr, PTE_SYSCALL & uvpt[i])) != 0)
++					panic("copy_shared_pages: sys_page_map data: %e", r);
++			}
++		}
++	}
+ 	return 0;
+ }
+ 
 -- 
 2.20.1
 
