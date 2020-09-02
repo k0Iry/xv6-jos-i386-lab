@@ -1,4 +1,4 @@
-From 9acf44a9e94afcdc558aaa3235a530322b693b47 Mon Sep 17 00:00:00 2001
+From d3fb17beafc84112e784f40bf649e88b23544b0f Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Sun, 23 Aug 2020 14:22:13 +0000
 Subject: [PATCH] start with lab5
@@ -9,6 +9,7 @@ adding some comments
 finished exercise 7
 finished exercise 8 (be careful with PTE_AVAIL, it will enable the page
 sharing)
+finished exercise 9 (be careful with sys_page_alloc, need zero out page)
 ---
  fs/bc.c        | 13 ++++++++-
  fs/fs.c        | 74 ++++++++++++++++++++++++++++++++++++++++++++++----
@@ -16,14 +17,14 @@ sharing)
  inc/mmu.h      |  1 +
  kern/env.c     |  4 ++-
  kern/init.c    |  3 +-
- kern/syscall.c | 15 +++++++++-
- kern/trap.c    | 11 ++++++++
+ kern/syscall.c | 17 ++++++++++--
+ kern/trap.c    | 19 +++++++++++++
  lib/exit.c     |  2 +-
  lib/file.c     | 12 +++++++-
  lib/fork.c     | 26 +++++++++++-------
  lib/pgfault.c  |  4 +--
  lib/spawn.c    | 29 +++++++++++++++++++-
- 13 files changed, 192 insertions(+), 26 deletions(-)
+ 13 files changed, 201 insertions(+), 27 deletions(-)
 
 diff --git a/fs/bc.c b/fs/bc.c
 index e3922c4..c9ab106 100644
@@ -260,7 +261,7 @@ index 91ae9e1..1f4c4ad 100644
  
  	// Should not be necessary - drains keyboard because interrupt has given up.
 diff --git a/kern/syscall.c b/kern/syscall.c
-index a9e6d38..c2a27db 100644
+index a9e6d38..315f404 100644
 --- a/kern/syscall.c
 +++ b/kern/syscall.c
 @@ -134,7 +134,18 @@ sys_env_set_trapframe(envid_t envid, struct Trapframe *tf)
@@ -283,6 +284,15 @@ index a9e6d38..c2a27db 100644
  }
  
  // Set the page fault upcall for 'envid' by modifying the corresponding struct
+@@ -191,7 +202,7 @@ sys_page_alloc(envid_t envid, void *va, int perm)
+ 	if ((perm & PTE_P) != PTE_P || (perm & PTE_U) != PTE_U || (perm & ~PTE_SYSCALL) != 0)
+ 		return -E_INVAL;
+ 
+-	struct PageInfo *page = page_alloc(0);
++	struct PageInfo *page = page_alloc(ALLOC_ZERO);
+ 	if (page == NULL)
+ 		return -E_NO_MEM;
+ 	if (page_insert(env->env_pgdir, page, va, perm) != 0)
 @@ -404,6 +415,8 @@ syscall(uint32_t syscallno, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4,
  		return sys_exofork();
  	case SYS_env_set_status:
@@ -293,10 +303,25 @@ index a9e6d38..c2a27db 100644
  		return sys_env_set_pgfault_upcall(a1, (void *)a2);
  	case SYS_yield:
 diff --git a/kern/trap.c b/kern/trap.c
-index 5f110a7..cff4268 100644
+index 5f110a7..ccf82f7 100644
 --- a/kern/trap.c
 +++ b/kern/trap.c
-@@ -310,6 +310,17 @@ trap(struct Trapframe *tf)
+@@ -245,6 +245,14 @@ trap_dispatch(struct Trapframe *tf)
+ 			sched_yield();
+ 			break;
+ 
++		case IRQ_OFFSET + IRQ_KBD:
++			kbd_intr();
++			return;
++
++		case IRQ_OFFSET + IRQ_SERIAL:
++			serial_intr();
++			return;
++		
+ 		default:
+ 			break;
+ 		}
+@@ -310,6 +318,17 @@ trap(struct Trapframe *tf)
  		// Copy trap frame (which is currently on the stack)
  		// into 'curenv->env_tf', so that running the environment
  		// will restart at the trap point.
