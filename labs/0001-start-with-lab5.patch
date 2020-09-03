@@ -1,4 +1,4 @@
-From d3fb17beafc84112e784f40bf649e88b23544b0f Mon Sep 17 00:00:00 2001
+From 2ddc45cfde6e6de2c7ef4420d027d9542135869f Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Sun, 23 Aug 2020 14:22:13 +0000
 Subject: [PATCH] start with lab5
@@ -10,12 +10,15 @@ finished exercise 7
 finished exercise 8 (be careful with PTE_AVAIL, it will enable the page
 sharing)
 finished exercise 9 (be careful with sys_page_alloc, need zero out page)
+finished exercise 10 (with file IO redirection)
+
+later update with some challenges
 ---
  fs/bc.c        | 13 ++++++++-
  fs/fs.c        | 74 ++++++++++++++++++++++++++++++++++++++++++++++----
  fs/serv.c      | 24 ++++++++++++++--
  inc/mmu.h      |  1 +
- kern/env.c     |  4 ++-
+ kern/env.c     |  3 ++
  kern/init.c    |  3 +-
  kern/syscall.c | 17 ++++++++++--
  kern/trap.c    | 19 +++++++++++++
@@ -24,7 +27,8 @@ finished exercise 9 (be careful with sys_page_alloc, need zero out page)
  lib/fork.c     | 26 +++++++++++-------
  lib/pgfault.c  |  4 +--
  lib/spawn.c    | 29 +++++++++++++++++++-
- 13 files changed, 201 insertions(+), 27 deletions(-)
+ user/sh.c      | 13 ++++++++-
+ 14 files changed, 213 insertions(+), 27 deletions(-)
 
 diff --git a/fs/bc.c b/fs/bc.c
 index e3922c4..c9ab106 100644
@@ -225,19 +229,18 @@ index a9c7241..10207bd 100644
  
  // Flags in PTE_SYSCALL may be used in system calls.  (Others may not.)
 diff --git a/kern/env.c b/kern/env.c
-index 1ac611c..1f86f5e 100644
+index 1ac611c..d7f90bd 100644
 --- a/kern/env.c
 +++ b/kern/env.c
-@@ -274,7 +274,7 @@ env_alloc(struct Env **newenv_store, envid_t parent_id)
+@@ -274,6 +274,7 @@ env_alloc(struct Env **newenv_store, envid_t parent_id)
  	env_free_list = e->env_link;
  	*newenv_store = e;
  
--	// cprintf("[%08x] new env %08x\n", curenv ? curenv->env_id : 0, e->env_id);
-+	cprintf("[%08x] new env %08x\n", curenv ? curenv->env_id : 0, e->env_id);
++	// slient this line
+ 	// cprintf("[%08x] new env %08x\n", curenv ? curenv->env_id : 0, e->env_id);
  	return 0;
  }
- 
-@@ -420,6 +420,8 @@ env_create(uint8_t *binary, enum EnvType type)
+@@ -420,6 +421,8 @@ env_create(uint8_t *binary, enum EnvType type)
  	if (env_alloc(&new_env, 0) != 0)
  		panic("env_alloc");
  	load_icode(new_env, binary);
@@ -518,6 +521,30 @@ index 9d0eb07..1e27ded 100644
  	return 0;
  }
  
+diff --git a/user/sh.c b/user/sh.c
+index 26f501a..db46d34 100644
+--- a/user/sh.c
++++ b/user/sh.c
+@@ -55,7 +55,18 @@ again:
+ 			// then close the original 'fd'.
+ 
+ 			// LAB 5: Your code here.
+-			panic("< redirection not implemented");
++			// panic("< redirection not implemented");
++			if ((fd = open(t, O_RDONLY)) < 0)
++			{
++				cprintf("open %s for read: %e", t, fd);
++				exit();
++			}
++
++			if (fd != 0)
++			{
++				dup(fd, 0);
++				close(fd);
++			}
+ 			break;
+ 
+ 		case '>':	// Output redirection
 -- 
 2.20.1
 
