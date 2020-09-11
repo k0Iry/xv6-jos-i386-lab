@@ -1,0 +1,257 @@
+From 40b6765af715b5189a12ed59602ce594bcf9bff1 Mon Sep 17 00:00:00 2001
+From: Aaron <kljsandjb@me.com>
+Date: Fri, 11 Sep 2020 13:25:55 +0000
+Subject: [PATCH] LAB 5 challenge 1, IRQ driven disk access
+
+trying to use IRQ to drive the disk access
+---
+ fs/ide.c       | 60 +++++++++++++++++++++++++++++++++++++++++++++-----
+ inc/lib.h      |  1 +
+ inc/syscall.h  |  1 +
+ kern/picirq.c  |  4 ++++
+ kern/syscall.c | 27 +++++++++++++++++++++++
+ kern/trap.c    | 13 +++++++++++
+ lib/fork.c     |  6 ++++-
+ lib/syscall.c  |  5 +++++
+ 8 files changed, 110 insertions(+), 7 deletions(-)
+
+diff --git a/fs/ide.c b/fs/ide.c
+index 2d8b4bf..3cc1eb9 100644
+--- a/fs/ide.c
++++ b/fs/ide.c
+@@ -59,6 +59,13 @@ ide_set_disk(int d)
+ 	diskno = d;
+ }
+ 
++enum FS_OP {READ = 0, WRITE};
++struct irq_task
++{
++	enum FS_OP op;
++	void *data; // data to be read or written
++} irq_task;
++static void ide_irq_handler();
+ 
+ int
+ ide_read(uint32_t secno, void *dst, size_t nsecs)
+@@ -74,13 +81,16 @@ ide_read(uint32_t secno, void *dst, size_t nsecs)
+ 	outb(0x1F4, (secno >> 8) & 0xFF);
+ 	outb(0x1F5, (secno >> 16) & 0xFF);
+ 	outb(0x1F6, 0xE0 | ((diskno&1)<<4) | ((secno>>24)&0x0F));
+-	outb(0x1F7, 0x20);	// CMD 0x20 means read sector
++	outb(0x1F7, nsecs > 1 ? 0xc4 : 0x20);	// CMD 0x20 means read sector
+ 
+-	for (; nsecs > 0; nsecs--, dst += SECTSIZE) {
+-		if ((r = ide_wait_ready(1)) < 0)
+-			return r;
+-		insl(0x1F0, dst, SECTSIZE/4);
+-	}
++	// for (; nsecs > 0; nsecs--, dst += SECTSIZE) {
++	// 	if ((r = ide_wait_ready(1)) < 0)
++	// 		return r;
++	// 	insl(0x1F0, dst, SECTSIZE/4);
++	// }
++	irq_task.op = READ;
++	irq_task.data = dst;
++	sys_ide_sleep(ide_irq_handler);
+ 
+ 	return 0;
+ }
+@@ -110,3 +120,41 @@ ide_write(uint32_t secno, const void *src, size_t nsecs)
+ 	return 0;
+ }
+ 
++/* 
++using upcall, like page fault handler
++but we run on current stack, could be
++normal user stack or user exception stack
++
++0. non-fs env raises a fs request and sleep
++1. fs might issue read/write command
++2. fs goes to sleep and yields the CPU
++3. disk irq comes, fs wakes up
++4. fs in turn wakes up env that waits
++5. fs serv goes for another run
++
++So basically we can only handle one IRQ each
++time (since fs env will sleep after each disk command),
++we can support concurrency by implementing 'thread' in JOS
++*/
++
++/*
++install the handler in upcall, reserve a 4 bytes space
++for old tf->eip, and replace the tf->eip with
++the address of this handler, env_run(tf) will pick up the
++handler first, and go back where it stopped before and continue
++if things go well, the waiting process would be woken up
++*/
++static void ide_irq_handler()
++{
++	if (ide_wait_ready(true) == 0)
++	{
++		if (irq_task.op == READ)
++		{
++			insl(0x1F0, irq_task.data, BLKSIZE / 4);
++		}
++		// for write operation, we don't need to do anything else
++		return;
++	}
++	// TODO: there is a disk error occured, should we panic?
++	cprintf("there is a disk error existing...\n");
++}
+\ No newline at end of file
+diff --git a/inc/lib.h b/inc/lib.h
+index 88f7102..fb0bc2d 100644
+--- a/inc/lib.h
++++ b/inc/lib.h
+@@ -57,6 +57,7 @@ int	sys_page_map(envid_t src_env, void *src_pg,
+ int	sys_page_unmap(envid_t env, void *pg);
+ int	sys_ipc_try_send(envid_t to_env, uint32_t value, void *pg, int perm);
+ int	sys_ipc_recv(void *rcv_pg);
++void sys_ide_sleep(void *handler);
+ 
+ // This must be inlined.  Exercise for reader: why?
+ static inline envid_t __attribute__((always_inline))
+diff --git a/inc/syscall.h b/inc/syscall.h
+index 20c6433..cc21b42 100644
+--- a/inc/syscall.h
++++ b/inc/syscall.h
+@@ -17,6 +17,7 @@ enum {
+ 	SYS_yield,
+ 	SYS_ipc_try_send,
+ 	SYS_ipc_recv,
++	SYS_ide_sleep,
+ 	NSYSCALLS
+ };
+ 
+diff --git a/kern/picirq.c b/kern/picirq.c
+index 8cb3e62..9b39bef 100644
+--- a/kern/picirq.c
++++ b/kern/picirq.c
+@@ -15,6 +15,10 @@ static bool didinit;
+ void
+ pic_init(void)
+ {
++	// init ide disk interrupt
++	// for simplicity we init ide's irq just before pic init
++	// otherwise we might do it in IOAPIC
++	irq_setmask_8259A(irq_mask_8259A & ~(1<<IRQ_IDE));
+ 	didinit = 1;
+ 
+ 	// mask all interrupts
+diff --git a/kern/syscall.c b/kern/syscall.c
+index 315f404..abfec6f 100644
+--- a/kern/syscall.c
++++ b/kern/syscall.c
+@@ -385,6 +385,31 @@ sys_ipc_recv(void *dstva)
+ 	return 0;
+ }
+ 
++static void
++sys_ide_sleep(void *handler)
++{
++	// install handler
++	curenv->env_tf.tf_esp -= 4;
++	*((uintptr_t *)curenv->env_tf.tf_esp) = (uintptr_t)curenv->env_tf.tf_eip;
++	curenv->env_tf.tf_eip = (uintptr_t)handler;
++
++	// restore caller saved registers
++	curenv->env_tf.tf_esp -= 12;
++	*((uintptr_t *)curenv->env_tf.tf_esp + 2) = (uintptr_t)curenv->env_tf.tf_regs.reg_eax;
++	*((uintptr_t *)curenv->env_tf.tf_esp + 1) = (uintptr_t)curenv->env_tf.tf_regs.reg_ecx;
++	*((uintptr_t *)curenv->env_tf.tf_esp) = (uintptr_t)curenv->env_tf.tf_regs.reg_edx;
++
++	// inject shell code(x86's machine code) for restore the registers
++	curenv->env_tf.tf_esp -= 8;
++	*((uintptr_t *)curenv->env_tf.tf_esp) = 0x5a08c483;
++	*((uintptr_t *)curenv->env_tf.tf_esp + 1) = 0xc35859;
++
++	curenv->env_tf.tf_esp -= 4;
++	*((uintptr_t *)curenv->env_tf.tf_esp) = curenv->env_tf.tf_esp + 4;
++	curenv->env_status = ENV_NOT_RUNNABLE;
++	sched_yield();
++}
++
+ // Dispatches to the correct kernel function, passing the arguments.
+ int32_t
+ syscall(uint32_t syscallno, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4, uint32_t a5)
+@@ -425,6 +450,8 @@ syscall(uint32_t syscallno, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4,
+ 		return sys_ipc_try_send(a1, a2, (void *)a3, a4);
+ 	case SYS_ipc_recv:
+ 		return sys_ipc_recv((void *)a1);
++	case SYS_ide_sleep:
++		sys_ide_sleep((void *)a1);
+ 	case NSYSCALLS:
+ 	default:
+ 		return -E_INVAL;
+diff --git a/kern/trap.c b/kern/trap.c
+index ccf82f7..26ab2ae 100644
+--- a/kern/trap.c
++++ b/kern/trap.c
+@@ -252,6 +252,18 @@ trap_dispatch(struct Trapframe *tf)
+ 		case IRQ_OFFSET + IRQ_SERIAL:
+ 			serial_intr();
+ 			return;
++
++		case IRQ_OFFSET + IRQ_IDE:
++			cprintf("going to wake up file server\n");
++			for (int i = 0; i < NENV; i++)
++			{
++				if (envs[i].env_type == ENV_TYPE_FS && envs[i].env_status == ENV_NOT_RUNNABLE)
++				{
++					envs[i].env_status = ENV_RUNNABLE;
++					break;
++				}
++			}
++			return;
+ 		
+ 		default:
+ 			break;
+@@ -427,6 +439,7 @@ page_fault_handler(struct Trapframe *tf)
+ 	utf->utf_eflags = tf->tf_eflags;
+ 	utf->utf_esp = tf->tf_esp;
+ 
++	// page fault exception handler thread
+ 	tf->tf_esp = (uintptr_t)&utf->utf_fault_va;
+ 	tf->tf_eip = (uintptr_t)curenv->env_pgfault_upcall;
+ 	env_run(curenv);
+diff --git a/lib/fork.c b/lib/fork.c
+index ce606d6..4cdf73c 100644
+--- a/lib/fork.c
++++ b/lib/fork.c
+@@ -63,6 +63,11 @@ pgfault(struct UTrapframe *utf)
+ // copy-on-write again if it was already copy-on-write at the beginning of
+ // this function?)
+ //
++// Answer of above exercise question:
++// *If the beginning it is CoW, and then it faults, marked as PTE_W, then
++// we'll corrupt the child's copy when this page is being written by parent
++// after this, and the 'snapshot' misfunction*
++//
+ // Returns: 0 on success, < 0 on error.
+ // It is also OK to panic on error.
+ //
+@@ -73,7 +78,6 @@ duppage(envid_t envid, unsigned pn)
+ 
+ 	// LAB 4: Your code here.
+ 	int perm = PTE_P | PTE_U;	// at least PTE_P and PTE_U
+-	// envid_t curenvid = sys_getenvid();
+ 
+ 	int is_wr = (uvpt[pn] & PTE_W) == PTE_W;
+ 	int is_cow = (uvpt[pn] & PTE_COW) == PTE_COW;
+diff --git a/lib/syscall.c b/lib/syscall.c
+index f6d1136..d55ba01 100644
+--- a/lib/syscall.c
++++ b/lib/syscall.c
+@@ -158,3 +158,8 @@ sys_ipc_recv(void *dstva)
+ 	return syscall(SYS_ipc_recv, 1, (uint32_t)dstva, 0, 0, 0, 0);
+ }
+ 
++void
++sys_ide_sleep(void *handler)
++{
++	syscall(SYS_ide_sleep, 0, (uint32_t)handler, 0, 0, 0, 0);
++}
+\ No newline at end of file
+-- 
+2.20.1
+
