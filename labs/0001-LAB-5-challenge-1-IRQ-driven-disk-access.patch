@@ -1,25 +1,25 @@
-From fbf3f7aab6c7d01798db9cfc03eecd8f14cdd145 Mon Sep 17 00:00:00 2001
+From b90af35f6372aa909d2495108cdc4379a1bb9d21 Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Fri, 11 Sep 2020 13:25:55 +0000
 Subject: [PATCH] LAB 5 challenge 1, IRQ driven disk access
 
 support interrupt driven disk access
 ---
- fs/ide.c        | 30 +++++++++++++++++-------------
+ fs/ide.c        | 34 +++++++++++++++++++++-------------
  inc/env.h       |  6 +++++-
  inc/lib.h       |  1 +
  inc/syscall.h   |  1 +
  kern/picirq.c   | 10 ++++++++--
  kern/sched.c    |  2 +-
  kern/syscall.c  | 10 ++++++++++
- kern/trap.c     | 29 ++++++++++++++++++++++++++++-
+ kern/trap.c     | 34 +++++++++++++++++++++++++++++++++-
  lib/fork.c      |  6 +++++-
  lib/syscall.c   |  5 +++++
  user/testfile.c |  4 ++--
- 11 files changed, 83 insertions(+), 21 deletions(-)
+ 11 files changed, 92 insertions(+), 21 deletions(-)
 
 diff --git a/fs/ide.c b/fs/ide.c
-index 2d8b4bf..43387bd 100644
+index 2d8b4bf..90c6789 100644
 --- a/fs/ide.c
 +++ b/fs/ide.c
 @@ -59,7 +59,6 @@ ide_set_disk(int d)
@@ -30,7 +30,7 @@ index 2d8b4bf..43387bd 100644
  int
  ide_read(uint32_t secno, void *dst, size_t nsecs)
  {
-@@ -74,13 +73,9 @@ ide_read(uint32_t secno, void *dst, size_t nsecs)
+@@ -74,13 +73,12 @@ ide_read(uint32_t secno, void *dst, size_t nsecs)
  	outb(0x1F4, (secno >> 8) & 0xFF);
  	outb(0x1F5, (secno >> 16) & 0xFF);
  	outb(0x1F6, 0xE0 | ((diskno&1)<<4) | ((secno>>24)&0x0F));
@@ -42,11 +42,14 @@ index 2d8b4bf..43387bd 100644
 -			return r;
 -		insl(0x1F0, dst, SECTSIZE/4);
 -	}
++	// between issuing disk cmd and set to sleep, there might be a timer IRQ
++	// comes in, and fs -> RUNNABLE, then disk IRQ comes, and we handle it
++	// then fs goes to sleep, with CPU halted, we missed wake up
 +	sys_ide_sleep(dst);
  
  	return 0;
  }
-@@ -99,14 +94,23 @@ ide_write(uint32_t secno, const void *src, size_t nsecs)
+@@ -99,14 +97,24 @@ ide_write(uint32_t secno, const void *src, size_t nsecs)
  	outb(0x1F4, (secno >> 8) & 0xFF);
  	outb(0x1F5, (secno >> 16) & 0xFF);
  	outb(0x1F6, 0xE0 | ((diskno&1)<<4) | ((secno>>24)&0x0F));
@@ -59,6 +62,7 @@ index 2d8b4bf..43387bd 100644
 -		outsl(0x1F0, src, SECTSIZE/4);
 -	}
 +	outsl(0x1F0, src, nsecs*SECTSIZE/4);
++	sys_ide_sleep(0);
  
  	return 0;
  }
@@ -198,10 +202,10 @@ index 315f404..7bce18c 100644
  	default:
  		return -E_INVAL;
 diff --git a/kern/trap.c b/kern/trap.c
-index ccf82f7..6220eb5 100644
+index ccf82f7..eddef8b 100644
 --- a/kern/trap.c
 +++ b/kern/trap.c
-@@ -238,20 +238,46 @@ trap_dispatch(struct Trapframe *tf)
+@@ -238,20 +238,51 @@ trap_dispatch(struct Trapframe *tf)
  	// LAB 4: Your code here.
  	if (tf->tf_trapno >= IRQ_OFFSET && tf->tf_trapno < IRQ_OFFSET + 16)
  	{
@@ -243,13 +247,18 @@ index ccf82f7..6220eb5 100644
 +					// finally, make fs runnable
 +					if (envs[i].env_status == ENV_IDE_SLEEPING)
 +						envs[i].env_status = ENV_RUNNABLE;
++					else
++					{
++						cprintf("status: %u\n", envs[i].env_status);
++						print_trapframe(tf);
++					}
 +					return;
 +				}
 +			}
  		
  		default:
  			break;
-@@ -427,6 +453,7 @@ page_fault_handler(struct Trapframe *tf)
+@@ -427,6 +458,7 @@ page_fault_handler(struct Trapframe *tf)
  	utf->utf_eflags = tf->tf_eflags;
  	utf->utf_esp = tf->tf_esp;
  
