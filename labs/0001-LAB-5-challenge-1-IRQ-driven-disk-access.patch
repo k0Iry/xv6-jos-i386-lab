@@ -1,25 +1,53 @@
-From b90af35f6372aa909d2495108cdc4379a1bb9d21 Mon Sep 17 00:00:00 2001
+From 3cbc8ab5b6308debb01cdfd997565a4397572014 Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Fri, 11 Sep 2020 13:25:55 +0000
 Subject: [PATCH] LAB 5 challenge 1, IRQ driven disk access
 
-support interrupt driven disk access
+finished challenge 1
+
+make[1]: Leaving directory '/usr/src/app/lab'
+internal FS tests [fs/test.c]: OK (29.2s)
+  fs i/o: OK
+  check_bc: OK
+  check_super: OK
+  check_bitmap: OK
+  alloc_block: OK
+  file_open: OK
+  file_get_block: OK
+  file_flush/file_truncate/file rewrite: OK
+testfile: OK (25.7s)
+  serve_open/file_stat/file_close: OK
+  file_read: OK
+  file_write: OK
+  file_read after file_write: OK
+  open: OK
+  large file: OK
+spawn via spawnhello: OK (25.0s)
+Protection I/O space: OK (25.4s)
+    (Old jos.out.faultio failure log removed)
+PTE_SHARE [testpteshare]: OK (24.9s)
+PTE_SHARE [testfdsharing]: OK (25.0s)
+start the shell [icode]: Timeout! OK (51.3s)
+testshell: OK (29.1s)
+    (Old jos.out.testshell failure log removed)
+primespipe: OK (34.3s)
+Score: 150/150
+root@c9982579a1dc:/usr/src/app/lab#
 ---
- fs/ide.c        | 34 +++++++++++++++++++++-------------
- inc/env.h       |  6 +++++-
- inc/lib.h       |  1 +
- inc/syscall.h   |  1 +
- kern/picirq.c   | 10 ++++++++--
- kern/sched.c    |  2 +-
- kern/syscall.c  | 10 ++++++++++
- kern/trap.c     | 34 +++++++++++++++++++++++++++++++++-
- lib/fork.c      |  6 +++++-
- lib/syscall.c   |  5 +++++
- user/testfile.c |  4 ++--
- 11 files changed, 92 insertions(+), 21 deletions(-)
+ fs/ide.c       | 54 +++++++++++++++++++++++++++++---------------------
+ inc/env.h      |  7 ++++++-
+ inc/lib.h      |  1 +
+ inc/syscall.h  |  1 +
+ kern/picirq.c  | 10 ++++++++--
+ kern/sched.c   |  2 +-
+ kern/syscall.c | 32 ++++++++++++++++++++++++++++++
+ kern/trap.c    | 34 ++++++++++++++++++++++++++++++-
+ lib/fork.c     |  6 +++++-
+ lib/syscall.c  |  5 +++++
+ 10 files changed, 123 insertions(+), 29 deletions(-)
 
 diff --git a/fs/ide.c b/fs/ide.c
-index 2d8b4bf..90c6789 100644
+index 2d8b4bf..21ef938 100644
 --- a/fs/ide.c
 +++ b/fs/ide.c
 @@ -59,7 +59,6 @@ ide_set_disk(int d)
@@ -30,12 +58,22 @@ index 2d8b4bf..90c6789 100644
  int
  ide_read(uint32_t secno, void *dst, size_t nsecs)
  {
-@@ -74,13 +73,12 @@ ide_read(uint32_t secno, void *dst, size_t nsecs)
- 	outb(0x1F4, (secno >> 8) & 0xFF);
- 	outb(0x1F5, (secno >> 16) & 0xFF);
- 	outb(0x1F6, 0xE0 | ((diskno&1)<<4) | ((secno>>24)&0x0F));
+@@ -69,18 +68,17 @@ ide_read(uint32_t secno, void *dst, size_t nsecs)
+ 
+ 	ide_wait_ready(0);
+ 
+-	outb(0x1F2, nsecs);
+-	outb(0x1F3, secno & 0xFF);
+-	outb(0x1F4, (secno >> 8) & 0xFF);
+-	outb(0x1F5, (secno >> 16) & 0xFF);
+-	outb(0x1F6, 0xE0 | ((diskno&1)<<4) | ((secno>>24)&0x0F));
 -	outb(0x1F7, 0x20);	// CMD 0x20 means read sector
-+	outb(0x1F7, nsecs > 1 ? 0xc4 : 0x20);	// CMD 0x20 means read sector
++	// outb(0x1F2, nsecs);
++	// outb(0x1F3, secno & 0xFF);
++	// outb(0x1F4, (secno >> 8) & 0xFF);
++	// outb(0x1F5, (secno >> 16) & 0xFF);
++	// outb(0x1F6, 0xE0 | ((diskno&1)<<4) | ((secno>>24)&0x0F));
++	// outb(0x1F7, nsecs > 1 ? 0xc4 : 0x20);	// CMD 0x20 means read sector
  
 -	for (; nsecs > 0; nsecs--, dst += SECTSIZE) {
 -		if ((r = ide_wait_ready(1)) < 0)
@@ -45,24 +83,34 @@ index 2d8b4bf..90c6789 100644
 +	// between issuing disk cmd and set to sleep, there might be a timer IRQ
 +	// comes in, and fs -> RUNNABLE, then disk IRQ comes, and we handle it
 +	// then fs goes to sleep, with CPU halted, we missed wake up
-+	sys_ide_sleep(dst);
++	sys_ide_sleep(secno, dst, nsecs, 0, diskno);
  
  	return 0;
  }
-@@ -99,14 +97,24 @@ ide_write(uint32_t secno, const void *src, size_t nsecs)
- 	outb(0x1F4, (secno >> 8) & 0xFF);
- 	outb(0x1F5, (secno >> 16) & 0xFF);
- 	outb(0x1F6, 0xE0 | ((diskno&1)<<4) | ((secno>>24)&0x0F));
+@@ -94,19 +92,29 @@ ide_write(uint32_t secno, const void *src, size_t nsecs)
+ 
+ 	ide_wait_ready(0);
+ 
+-	outb(0x1F2, nsecs);
+-	outb(0x1F3, secno & 0xFF);
+-	outb(0x1F4, (secno >> 8) & 0xFF);
+-	outb(0x1F5, (secno >> 16) & 0xFF);
+-	outb(0x1F6, 0xE0 | ((diskno&1)<<4) | ((secno>>24)&0x0F));
 -	outb(0x1F7, 0x30);	// CMD 0x30 means write sector
-+	outb(0x1F7, nsecs > 1 ? 0xc5 : 0x30);	// CMD 0x30 means write sector
++	// outb(0x1F2, nsecs);
++	// outb(0x1F3, secno & 0xFF);
++	// outb(0x1F4, (secno >> 8) & 0xFF);
++	// outb(0x1F5, (secno >> 16) & 0xFF);
++	// outb(0x1F6, 0xE0 | ((diskno&1)<<4) | ((secno>>24)&0x0F));
++	// outb(0x1F7, nsecs > 1 ? 0xc5 : 0x30);	// CMD 0x30 means write sector
  
 -	for (; nsecs > 0; nsecs--, src += SECTSIZE) {
 -		if ((r = ide_wait_ready(1)) < 0)
 -			return r;
 -		outsl(0x1F0, src, SECTSIZE/4);
 -	}
-+	outsl(0x1F0, src, nsecs*SECTSIZE/4);
-+	sys_ide_sleep(0);
++	// outsl(0x1F0, src, nsecs*SECTSIZE/4);
++	sys_ide_sleep(secno, (void *)src, nsecs, 1, diskno);
  
  	return 0;
  }
@@ -82,7 +130,7 @@ index 2d8b4bf..90c6789 100644
 +*/
 \ No newline at end of file
 diff --git a/inc/env.h b/inc/env.h
-index ab392db..fdfd3ad 100644
+index ab392db..c8be428 100644
 --- a/inc/env.h
 +++ b/inc/env.h
 @@ -35,7 +35,8 @@ enum {
@@ -95,25 +143,26 @@ index ab392db..fdfd3ad 100644
  };
  
  // Special environment types
-@@ -66,6 +67,9 @@ struct Env {
+@@ -66,6 +67,10 @@ struct Env {
  	uint32_t env_ipc_value;		// Data value sent to us
  	envid_t env_ipc_from;		// envid of the sender
  	int env_ipc_perm;		// Perm of page mapping received
 +
 +	// Lab 5 FS
 +	void *chan;				// sleep on channel (0 means write, otherwise read)
++	int op;				// read 0, write 1
  };
  
  #endif // !JOS_INC_ENV_H
 diff --git a/inc/lib.h b/inc/lib.h
-index 88f7102..fb0bc2d 100644
+index 88f7102..089ea85 100644
 --- a/inc/lib.h
 +++ b/inc/lib.h
 @@ -57,6 +57,7 @@ int	sys_page_map(envid_t src_env, void *src_pg,
  int	sys_page_unmap(envid_t env, void *pg);
  int	sys_ipc_try_send(envid_t to_env, uint32_t value, void *pg, int perm);
  int	sys_ipc_recv(void *rcv_pg);
-+void sys_ide_sleep(void *handler);
++void sys_ide_sleep(uint32_t secno, void *chan, size_t nsecs, int op, int diskno);
  
  // This must be inlined.  Exercise for reader: why?
  static inline envid_t __attribute__((always_inline))
@@ -174,35 +223,57 @@ index b9e8da9..7cd8161 100644
  	}
  	if (i == NENV) {
 diff --git a/kern/syscall.c b/kern/syscall.c
-index 315f404..7bce18c 100644
+index 315f404..311632a 100644
 --- a/kern/syscall.c
 +++ b/kern/syscall.c
-@@ -385,6 +385,14 @@ sys_ipc_recv(void *dstva)
+@@ -385,6 +385,36 @@ sys_ipc_recv(void *dstva)
  	return 0;
  }
  
 +static void
-+sys_ide_sleep(void *chan)
++sys_ide_sleep(size_t secno, void *chan, size_t nsecs, int op, int diskno)
 +{
++	int r;
++	if (op == 0)
++	{
++		outb(0x1F2, nsecs);
++		outb(0x1F3, secno & 0xFF);
++		outb(0x1F4, (secno >> 8) & 0xFF);
++		outb(0x1F5, (secno >> 16) & 0xFF);
++		outb(0x1F6, 0xE0 | ((diskno&1)<<4) | ((secno>>24)&0x0F));
++		outb(0x1F7, nsecs > 1 ? 0xc4 : 0x20);	// CMD 0x20 means read sector
++	}
++	else
++	{
++		outb(0x1F2, nsecs);
++		outb(0x1F3, secno & 0xFF);
++		outb(0x1F4, (secno >> 8) & 0xFF);
++		outb(0x1F5, (secno >> 16) & 0xFF);
++		outb(0x1F6, 0xE0 | ((diskno&1)<<4) | ((secno>>24)&0x0F));
++		outb(0x1F7, nsecs > 1 ? 0xc5 : 0x30);	// CMD 0x30 means write sector
++
++		outsl(0x1F0, chan, nsecs*512/4);
++	}
 +    curenv->chan = chan;
 +	curenv->env_status = ENV_IDE_SLEEPING;
++	curenv->op = op;
 +	sched_yield();
 +}
 +
  // Dispatches to the correct kernel function, passing the arguments.
  int32_t
  syscall(uint32_t syscallno, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4, uint32_t a5)
-@@ -425,6 +433,8 @@ syscall(uint32_t syscallno, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4,
+@@ -425,6 +455,8 @@ syscall(uint32_t syscallno, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4,
  		return sys_ipc_try_send(a1, a2, (void *)a3, a4);
  	case SYS_ipc_recv:
  		return sys_ipc_recv((void *)a1);
 +	case SYS_ide_sleep:
-+		sys_ide_sleep((void *)a1);
++		sys_ide_sleep(a1, (void *)a2, a3, (int)a4, (int)a5);
  	case NSYSCALLS:
  	default:
  		return -E_INVAL;
 diff --git a/kern/trap.c b/kern/trap.c
-index ccf82f7..eddef8b 100644
+index ccf82f7..78c732e 100644
 --- a/kern/trap.c
 +++ b/kern/trap.c
 @@ -238,20 +238,51 @@ trap_dispatch(struct Trapframe *tf)
@@ -233,7 +304,7 @@ index ccf82f7..eddef8b 100644
 +				if (envs[i].env_type == ENV_TYPE_FS)
 +				{
 +					// read a BLKSIZE from disk if needed then acknowledge the interrupt
-+					if (envs[i].chan != 0)
++					if (envs[i].op == 0)
 +					{
 +						lcr3(PADDR(envs[i].env_pgdir));
 +						insl(0x1F0, envs[i].chan, PGSIZE / 4);
@@ -291,7 +362,7 @@ index ce606d6..4cdf73c 100644
  	int is_wr = (uvpt[pn] & PTE_W) == PTE_W;
  	int is_cow = (uvpt[pn] & PTE_COW) == PTE_COW;
 diff --git a/lib/syscall.c b/lib/syscall.c
-index f6d1136..d55ba01 100644
+index f6d1136..c033c9d 100644
 --- a/lib/syscall.c
 +++ b/lib/syscall.c
 @@ -158,3 +158,8 @@ sys_ipc_recv(void *dstva)
@@ -299,33 +370,11 @@ index f6d1136..d55ba01 100644
  }
  
 +void
-+sys_ide_sleep(void *handler)
++sys_ide_sleep(uint32_t secno, void *chan, size_t nsecs, int op, int diskno)
 +{
-+	syscall(SYS_ide_sleep, 0, (uint32_t)handler, 0, 0, 0, 0);
++	syscall(SYS_ide_sleep, 0, secno, (uint32_t)chan, nsecs, (uint32_t)op, (uint32_t)diskno);
 +}
 \ No newline at end of file
-diff --git a/user/testfile.c b/user/testfile.c
-index 981a5e1..8e83d69 100644
---- a/user/testfile.c
-+++ b/user/testfile.c
-@@ -28,7 +28,7 @@ umain(int argc, char **argv)
- 	char buf[512];
- 
- 	// We open files manually first, to avoid the FD layer
--	if ((r = xopen("/not-found", O_RDONLY)) < 0 && r != -E_NOT_FOUND)
-+	/*if ((r = xopen("/not-found", O_RDONLY)) < 0 && r != -E_NOT_FOUND)
- 		panic("serve_open /not-found: %e", r);
- 	else if (r >= 0)
- 		panic("serve_open /not-found succeeded!");
-@@ -96,7 +96,7 @@ umain(int argc, char **argv)
- 	fd = (struct Fd*) (0xD0000000 + r*PGSIZE);
- 	if (fd->fd_dev_id != 'f' || fd->fd_offset != 0 || fd->fd_omode != O_RDONLY)
- 		panic("open did not fill struct Fd correctly\n");
--	cprintf("open is good\n");
-+	cprintf("open is good\n");*/
- 
- 	// Try files with indirect blocks
- 	if ((f = open("/big", O_WRONLY|O_CREAT)) < 0)
 -- 
 2.20.1
 
