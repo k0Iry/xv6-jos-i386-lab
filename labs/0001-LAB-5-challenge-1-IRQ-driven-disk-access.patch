@@ -1,4 +1,4 @@
-From 6336fa464d21fd987b35c12105b261b71429d8c3 Mon Sep 17 00:00:00 2001
+From ff3e70643cc806a669e1fb3290e4255c0c2de822 Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Fri, 11 Sep 2020 13:25:55 +0000
 Subject: [PATCH] LAB 5 challenge 1, IRQ driven disk access
@@ -39,12 +39,12 @@ root@c9982579a1dc:/usr/src/app/lab#
  inc/lib.h      |  1 +
  inc/syscall.h  |  1 +
  kern/picirq.c  | 10 ++++++++--
- kern/sched.c   |  2 +-
+ kern/sched.c   |  3 ++-
  kern/syscall.c | 21 +++++++++++++++++++++
  kern/trap.c    | 35 ++++++++++++++++++++++++++++++++++-
  lib/fork.c     |  6 +++++-
  lib/syscall.c  |  6 ++++++
- 10 files changed, 101 insertions(+), 19 deletions(-)
+ 10 files changed, 102 insertions(+), 19 deletions(-)
 
 diff --git a/fs/ide.c b/fs/ide.c
 index 2d8b4bf..c218d5f 100644
@@ -187,20 +187,21 @@ index 8cb3e62..adc9080 100644
  	// NB Automatic EOI mode doesn't tend to work on the slave.
  	// Linux source code says it's "to be investigated".
 diff --git a/kern/sched.c b/kern/sched.c
-index b9e8da9..7cd8161 100644
+index b9e8da9..dab7b3b 100644
 --- a/kern/sched.c
 +++ b/kern/sched.c
-@@ -64,7 +64,7 @@ sched_halt(void)
+@@ -64,7 +64,8 @@ sched_halt(void)
  	for (i = 0; i < NENV; i++) {
  		if ((envs[i].env_status == ENV_RUNNABLE ||
  		     envs[i].env_status == ENV_RUNNING ||
 -		     envs[i].env_status == ENV_DYING))
-+		     envs[i].env_status == ENV_DYING || envs[i].env_status == ENV_IDE_SLEEPING))
++		     envs[i].env_status == ENV_DYING ||
++		     envs[i].env_status == ENV_IDE_SLEEPING))
  			break;
  	}
  	if (i == NENV) {
 diff --git a/kern/syscall.c b/kern/syscall.c
-index 315f404..4140b1d 100644
+index 315f404..814e830 100644
 --- a/kern/syscall.c
 +++ b/kern/syscall.c
 @@ -385,6 +385,25 @@ sys_ipc_recv(void *dstva)
@@ -218,9 +219,9 @@ index 315f404..4140b1d 100644
 +	else
 +	{
 +		outb(0x1F7, nsecs > 1 ? 0xc5 : 0x30);	// CMD 0x30 means write sector
-+		outsl(0x1F0, chan, nsecs*512/4);
++		outsl(0x1F0, chan, PGSIZE / 4);
 +	}
-+    curenv->chan = chan;
++	curenv->chan = chan;
 +	curenv->env_status = ENV_IDE_SLEEPING;
 +	curenv->op = op;
 +	sched_yield();
