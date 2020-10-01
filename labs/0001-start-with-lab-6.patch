@@ -1,0 +1,102 @@
+From 7cbe114c2388962173aaf6bf60d9cb00fded0cda Mon Sep 17 00:00:00 2001
+From: Aaron <kljsandjb@me.com>
+Date: Thu, 1 Oct 2020 13:06:11 +0000
+Subject: [PATCH] start with lab 6
+
+---
+ kern/e1000.h    | 4 ++++
+ kern/pci.c      | 1 +
+ kern/syscall.c  | 4 +++-
+ kern/trap.c     | 5 +----
+ user/testtime.c | 5 ++++-
+ 5 files changed, 13 insertions(+), 6 deletions(-)
+
+diff --git a/kern/e1000.h b/kern/e1000.h
+index 8b5a513..5874ceb 100644
+--- a/kern/e1000.h
++++ b/kern/e1000.h
+@@ -1,3 +1,7 @@
+ #ifndef JOS_KERN_E1000_H
+ #define JOS_KERN_E1000_H
++
++#define E1000_VENDOR_ID 0x8086
++#define E1000_DEVICE_ID 0x100E
++
+ #endif  // SOL >= 6
+diff --git a/kern/pci.c b/kern/pci.c
+index 784e072..c08dc58 100644
+--- a/kern/pci.c
++++ b/kern/pci.c
+@@ -31,6 +31,7 @@ struct pci_driver pci_attach_class[] = {
+ // pci_attach_vendor matches the vendor ID and device ID of a PCI device. key1
+ // and key2 should be the vendor ID and device ID respectively
+ struct pci_driver pci_attach_vendor[] = {
++	{ E1000_VENDOR_ID, E1000_DEVICE_ID, (int (*)(struct pci_func *pcif))&pci_func_enable },
+ 	{ 0, 0, 0 },
+ };
+ 
+diff --git a/kern/syscall.c b/kern/syscall.c
+index e794918..fb9afa9 100644
+--- a/kern/syscall.c
++++ b/kern/syscall.c
+@@ -391,7 +391,7 @@ static int
+ sys_time_msec(void)
+ {
+ 	// LAB 6: Your code here.
+-	panic("sys_time_msec not implemented");
++	return time_msec();
+ }
+ 
+ static void
+@@ -453,6 +453,8 @@ syscall(uint32_t syscallno, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4,
+ 		return sys_ipc_try_send(a1, a2, (void *)a3, a4);
+ 	case SYS_ipc_recv:
+ 		return sys_ipc_recv((void *)a1);
++	case SYS_time_msec:
++		return sys_time_msec();
+ 	case SYS_ide_sleep:
+ 		sys_ide_sleep((void *)a1, a2, (int)a3);
+ 	case NSYSCALLS:
+diff --git a/kern/trap.c b/kern/trap.c
+index 37014bf..ce81dd4 100644
+--- a/kern/trap.c
++++ b/kern/trap.c
+@@ -242,6 +242,7 @@ trap_dispatch(struct Trapframe *tf)
+ 		switch (tf->tf_trapno)
+ 		{
+ 		case IRQ_OFFSET + IRQ_TIMER:
++			time_tick();
+ 			lapic_eoi();
+ 			sched_yield();
+ 			break;
+@@ -296,10 +297,6 @@ trap_dispatch(struct Trapframe *tf)
+ 	// triggered on every CPU.
+ 	// LAB 6: Your code here.
+ 
+-
+-	// Handle keyboard and serial interrupts.
+-	// LAB 5: Your code here.
+-
+ 	// Unexpected trap: The user process or the kernel has a bug.
+ 	print_trapframe(tf);
+ 	if (tf->tf_cs == GD_KT)
+diff --git a/user/testtime.c b/user/testtime.c
+index 68e350c..61cf8f8 100644
+--- a/user/testtime.c
++++ b/user/testtime.c
+@@ -27,8 +27,11 @@ umain(int argc, char **argv)
+ 
+ 	cprintf("starting count down: ");
+ 	for (i = 5; i >= 0; i--) {
+-		cprintf("%d ", i);
++		// since I enabled disk interrupt, so count down will not be
++		// continous sometimes, so move sleep ahead
+ 		sleep(1);
++		cprintf("%d ", i);
++		// sleep(1);
+ 	}
+ 	cprintf("\n");
+ 	breakpoint();
+-- 
+2.20.1
+
