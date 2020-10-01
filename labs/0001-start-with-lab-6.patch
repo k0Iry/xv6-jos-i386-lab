@@ -1,4 +1,4 @@
-From 7cbe114c2388962173aaf6bf60d9cb00fded0cda Mon Sep 17 00:00:00 2001
+From 31c73cb2ea904aeccf4e58594e3ebbbdbe26d140 Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Thu, 1 Oct 2020 13:06:11 +0000
 Subject: [PATCH] start with lab 6
@@ -8,8 +8,8 @@ Subject: [PATCH] start with lab 6
  kern/pci.c      | 1 +
  kern/syscall.c  | 4 +++-
  kern/trap.c     | 5 +----
- user/testtime.c | 5 ++++-
- 5 files changed, 13 insertions(+), 6 deletions(-)
+ user/testtime.c | 4 +++-
+ 5 files changed, 12 insertions(+), 6 deletions(-)
 
 diff --git a/kern/e1000.h b/kern/e1000.h
 index 8b5a513..5874ceb 100644
@@ -81,22 +81,20 @@ index 37014bf..ce81dd4 100644
  	print_trapframe(tf);
  	if (tf->tf_cs == GD_KT)
 diff --git a/user/testtime.c b/user/testtime.c
-index 68e350c..61cf8f8 100644
+index 68e350c..26a9975 100644
 --- a/user/testtime.c
 +++ b/user/testtime.c
-@@ -27,8 +27,11 @@ umain(int argc, char **argv)
+@@ -22,7 +22,9 @@ umain(int argc, char **argv)
+ 	int i;
+ 
+ 	// Wait for the console to calm down
+-	for (i = 0; i < 50; i++)
++	// since I enabled disk interrupt, so count down will not be
++	// continous sometimes, so increase the yielding times
++	for (i = 0; i < 400; i++)
+ 		sys_yield();
  
  	cprintf("starting count down: ");
- 	for (i = 5; i >= 0; i--) {
--		cprintf("%d ", i);
-+		// since I enabled disk interrupt, so count down will not be
-+		// continous sometimes, so move sleep ahead
- 		sleep(1);
-+		cprintf("%d ", i);
-+		// sleep(1);
- 	}
- 	cprintf("\n");
- 	breakpoint();
 -- 
 2.20.1
 
