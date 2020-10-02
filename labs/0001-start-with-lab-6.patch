@@ -1,16 +1,35 @@
-From 31c73cb2ea904aeccf4e58594e3ebbbdbe26d140 Mon Sep 17 00:00:00 2001
+From 101ce64dcab9cc2d00af4e38c82c2f344817b64d Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Thu, 1 Oct 2020 13:06:11 +0000
 Subject: [PATCH] start with lab 6
 
 ---
+ kern/e1000.c    | 8 ++++++++
  kern/e1000.h    | 4 ++++
- kern/pci.c      | 1 +
+ kern/pci.c      | 2 ++
  kern/syscall.c  | 4 +++-
  kern/trap.c     | 5 +----
  user/testtime.c | 4 +++-
- 5 files changed, 12 insertions(+), 6 deletions(-)
+ 6 files changed, 21 insertions(+), 6 deletions(-)
 
+diff --git a/kern/e1000.c b/kern/e1000.c
+index 192f317..d66e317 100644
+--- a/kern/e1000.c
++++ b/kern/e1000.c
+@@ -1,4 +1,12 @@
+ #include <kern/e1000.h>
+ #include <kern/pmap.h>
++#include <kern/pci.h>
+ 
+ // LAB 6: Your driver code here
++
++//  wrap pci_func_enable function
++int pci_func_attach(struct pci_func *pcif)
++{
++    pci_func_enable(pcif);
++    return 0;
++}
+\ No newline at end of file
 diff --git a/kern/e1000.h b/kern/e1000.h
 index 8b5a513..5874ceb 100644
 --- a/kern/e1000.h
@@ -24,14 +43,22 @@ index 8b5a513..5874ceb 100644
 +
  #endif  // SOL >= 6
 diff --git a/kern/pci.c b/kern/pci.c
-index 784e072..c08dc58 100644
+index 784e072..4fd6f4e 100644
 --- a/kern/pci.c
 +++ b/kern/pci.c
-@@ -31,6 +31,7 @@ struct pci_driver pci_attach_class[] = {
+@@ -15,6 +15,7 @@ static uint32_t pci_conf1_data_ioport = 0x0cfc;
+ 
+ // Forward declarations
+ static int pci_bridge_attach(struct pci_func *pcif);
++extern int pci_func_attach(struct pci_func *pcif);
+ 
+ // PCI driver table
+ struct pci_driver {
+@@ -31,6 +32,7 @@ struct pci_driver pci_attach_class[] = {
  // pci_attach_vendor matches the vendor ID and device ID of a PCI device. key1
  // and key2 should be the vendor ID and device ID respectively
  struct pci_driver pci_attach_vendor[] = {
-+	{ E1000_VENDOR_ID, E1000_DEVICE_ID, (int (*)(struct pci_func *pcif))&pci_func_enable },
++	{ E1000_VENDOR_ID, E1000_DEVICE_ID, &pci_func_attach },
  	{ 0, 0, 0 },
  };
  
