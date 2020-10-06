@@ -1,10 +1,10 @@
-From ccbd02a2adbea030221323a830a666fd2ca219c7 Mon Sep 17 00:00:00 2001
+From 9512416da80416bf07724068b46e1ea5eec4b655 Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Thu, 1 Oct 2020 13:06:11 +0000
 Subject: [PATCH] start with lab 6
 
 initialized transmit, TX is ready
-transmit finished
+transmit finished, added system call
 
 root@9dfe7b025747:/usr/src/app/lab# tcpdump -XXnr qemu.pcap
 reading from file qemu.pcap, link-type EN10MB (Ethernet)
@@ -19,25 +19,69 @@ reading from file qemu.pcap, link-type EN10MB (Ethernet)
 20:44:41.812211 [|ether]
         0x0000:  6865 6c6c 6f2c 2077 6f72 6c64 0a         hello,.world.
 ---
- kern/e1000.c    | 80 +++++++++++++++++++++++++++++++++++++++++++++++++
- kern/e1000.h    | 41 +++++++++++++++++++++++++
- kern/pci.c      |  8 +++++
- kern/syscall.c  |  4 ++-
- kern/trap.c     |  5 +---
- user/testtime.c |  4 ++-
- 6 files changed, 136 insertions(+), 6 deletions(-)
+ inc/lib.h       |   1 +
+ inc/syscall.h   |   1 +
+ kern/e1000.c    | 101 ++++++++++++++++++++++++++++++++++++++++++++++++
+ kern/e1000.h    |  15 +++++++
+ kern/pci.c      |   8 ++++
+ kern/syscall.c  |  14 ++++++-
+ kern/trap.c     |   5 +--
+ lib/syscall.c   |   6 +++
+ user/testtime.c |   4 +-
+ 9 files changed, 149 insertions(+), 6 deletions(-)
 
+diff --git a/inc/lib.h b/inc/lib.h
+index 0850acb..24bec7a 100644
+--- a/inc/lib.h
++++ b/inc/lib.h
+@@ -61,6 +61,7 @@ int	sys_ipc_try_send(envid_t to_env, uint32_t value, void *pg, int perm);
+ int	sys_ipc_recv(void *rcv_pg);
+ unsigned int sys_time_msec(void);
+ void sys_ide_sleep(void *chan, size_t nsecs, int op);
++int sys_send(const void *buffer, size_t length);
+ 
+ // This must be inlined.  Exercise for reader: why?
+ static inline envid_t __attribute__((always_inline))
+diff --git a/inc/syscall.h b/inc/syscall.h
+index 23c5278..612f9be 100644
+--- a/inc/syscall.h
++++ b/inc/syscall.h
+@@ -19,6 +19,7 @@ enum {
+ 	SYS_ipc_recv,
+ 	SYS_time_msec,
+ 	SYS_ide_sleep,
++	SYS_send,
+ 	NSYSCALLS
+ };
+ 
 diff --git a/kern/e1000.c b/kern/e1000.c
-index 192f317..9a2b284 100644
+index 192f317..955465d 100644
 --- a/kern/e1000.c
 +++ b/kern/e1000.c
-@@ -1,4 +1,84 @@
+@@ -1,4 +1,105 @@
  #include <kern/e1000.h>
  #include <kern/pmap.h>
 +#include <kern/pci.h>
 +#include <inc/string.h>
  
  // LAB 6: Your driver code here
++
++// divided by 4 for use as uint32_t[] indices.
++
++#define E1000_TDBAL    (0x03800/4)  /* TX Descriptor Base Address Low - RW */
++#define E1000_TDBAH    (0x03804/4)  /* TX Descriptor Base Address High - RW */
++#define E1000_TDLEN    (0x03808/4)  /* TX Descriptor Length - RW */
++#define E1000_TDH      (0x03810/4)  /* TX Descriptor Head - RW */
++#define E1000_TDT      (0x03818/4)  /* TX Descripotr Tail - RW */
++
++/* Transmit Control */
++#define E1000_TCTL     (0x00400/4)  /* TX Control - RW */
++#define E1000_TIPG     (0x00410/4)  /* TX Inter-packet gap -RW */
++
++#define E1000_TXD_CMD_RS     0x08000000 /* Report Status */
++#define E1000_TXD_STAT_DD    0x00000001 /* Descriptor Done */
++
++#define MTU 1518
 +
 +// register descriptor layout, 64 descriptors, each with 16 byte
 +// 8 descriptors within a group, total 8 groups, 1KB ring buffer.
@@ -55,8 +99,6 @@ index 192f317..9a2b284 100644
 +
 +struct tx_desc tdesc[64];  // TDESC ring buffer, max 64
 +
-+int e1000_transmit(void *buffer, size_t size);
-+
 +//  wrap pci_func_enable function
 +int pci_func_attach(struct pci_func *pcif)
 +{
@@ -67,61 +109,67 @@ index 192f317..9a2b284 100644
 +    for (int i = 0; i < tdesc_length; i+=2)
 +    {
 +        tdesc[i].addr = page2pa(page_alloc(ALLOC_ZERO));
-+        tdesc[i].length = MTU;
-+        tdesc[i].cmd |= 0b1000; // set RS bit to report status of each descriptor
-+        tdesc[i].status |= 0b1; // enable DD bit by default, clear when transmitting
++        tdesc[i].cmd |= (E1000_TXD_CMD_RS >> 24); // set RS bit to report status of each descriptor
++        tdesc[i].status |= E1000_TXD_STAT_DD; // enable DD bit by default, clear when transmitting
 +        
 +        // assign another half to the second one
 +        tdesc[i + 1].addr = tdesc[i].addr + PGSIZE / 2;
-+        tdesc[i + 1].length = MTU;
-+        tdesc[i + 1].cmd |= 0b1000;
-+        tdesc[i + 1].status |= 0b1;
++        tdesc[i + 1].cmd |= (E1000_TXD_CMD_RS >> 24);
++        tdesc[i + 1].status |= E1000_TXD_STAT_DD;
 +    }
 +
 +    // perform initialization in Chapter 14.5, for TX
-+    e1000_bar0[E1000_TDBAH / sizeof(uint32_t)] = 0;     // high 32 bit is cleared
-+    e1000_bar0[E1000_TDBAL / sizeof(uint32_t)] = PADDR(tdesc);     // base address as descriptor array's physical address
-+    e1000_bar0[E1000_TDLEN / sizeof(uint32_t)] = sizeof(tdesc);    // total 1024 bytes
-+    e1000_bar0[E1000_TDH / sizeof(uint32_t)] = 0x0;        // initialized as 0, Hardware is responsible to update this
-+    e1000_bar0[E1000_TDT / sizeof(uint32_t)] = 0x0;        // initialized as 0, Software is responsible to update this
-+    e1000_bar0[E1000_TCTL / sizeof(uint32_t)] = (0x40 << 12) | 0b1010;    // enable TX, full-duplex operation
-+    e1000_bar0[E1000_TIPG / sizeof(uint32_t)] = 10;        // IEEE 802.3 standard IPG
++    e1000_bar0[E1000_TDBAH] = 0;     // high 32 bit is cleared
++    e1000_bar0[E1000_TDBAL] = PADDR(tdesc);     // base address as descriptor array's physical address
++    e1000_bar0[E1000_TDLEN ] = sizeof(tdesc);    // total 1024 bytes
++    e1000_bar0[E1000_TDH] = 0x0;        // initialized as 0, Hardware is responsible to update this
++    e1000_bar0[E1000_TDT] = 0x0;        // initialized as 0, Software is responsible to update this
++    e1000_bar0[E1000_TCTL] = (0x40 << 12) | 0b1010;    // enable TX, full-duplex operation
++    e1000_bar0[E1000_TIPG] = 10;        // IEEE 802.3 standard IPG
 +
-+    char *sample = "hello, world\n";
++    /* self test with overflow and transmission*/
++    char *sample = "hello, world, let's transmit something\n";
 +    for (int i = 0; i < 142; i++)
 +        e1000_transmit(sample, strlen(sample));
 +
 +    return 0;
 +}
 +
-+int e1000_transmit(void *buffer, size_t size)
++/*
++ * transmit a packet
++ * 
++ * return number of bytes transmitted
++ * return 0 if this packet needs re-transmission
++*/
++size_t e1000_transmit(const void *buffer, size_t size)
 +{
-+    uint32_t current = e1000_bar0[E1000_TDT / sizeof(uint32_t)];
-+    uint32_t next = current + 1;
-+    if (tdesc[current].status & 0b1)
++    uint32_t current = e1000_bar0[E1000_TDT];
++    if (tdesc[current].status & E1000_TXD_STAT_DD)
 +    {
-+        tdesc[current].status &= ~0b1;
++        tdesc[current].status &= ~E1000_TXD_STAT_DD;
 +        void *addr = (void *)KADDR((uint32_t)tdesc[current].addr);
-+        memcpy(addr, buffer, MIN(size, MTU));
++        size_t length = MIN(size, MTU);
++        memcpy(addr, buffer, length);
 +        tdesc[current].cmd |= 0b1;      // End of Packet
-+        tdesc[current].length = MIN(size, MTU);
++        tdesc[current].length = length;
 +        // update tail pointer, inform network card
-+        e1000_bar0[E1000_TDT / sizeof(uint32_t)] = next % (sizeof(tdesc) / sizeof(struct tx_desc));
-+        return 0;
++        uint32_t next = current + 1;
++        e1000_bar0[E1000_TDT] = next % (sizeof(tdesc) / sizeof(struct tx_desc));
++        return length;
 +    }
 +    else
 +    {
 +        // require for re-transmission
 +        cprintf("lost packet 0x%x\n", buffer);
-+        return -1;
++        return 0;
 +    }
 +}
 \ No newline at end of file
 diff --git a/kern/e1000.h b/kern/e1000.h
-index 8b5a513..a501d38 100644
+index 8b5a513..7a9ecfa 100644
 --- a/kern/e1000.h
 +++ b/kern/e1000.h
-@@ -1,3 +1,44 @@
+@@ -1,3 +1,18 @@
  #ifndef JOS_KERN_E1000_H
  #define JOS_KERN_E1000_H
 +
@@ -130,44 +178,18 @@ index 8b5a513..a501d38 100644
 +#define E1000_VENDOR_ID 0x8086
 +#define E1000_DEVICE_ID 0x100E
 +
-+#define MTU 1518
-+
-+#define E1000_STATUS   0x00008  /* Device Status - RO */
-+
-+#define E1000_TDBAL    0x03800  /* TX Descriptor Base Address Low - RW */
-+#define E1000_TDBAH    0x03804  /* TX Descriptor Base Address High - RW */
-+#define E1000_TDLEN    0x03808  /* TX Descriptor Length - RW */
-+#define E1000_TDH      0x03810  /* TX Descriptor Head - RW */
-+#define E1000_TDT      0x03818  /* TX Descripotr Tail - RW */
-+
-+/* Transmit Control */
-+#define E1000_TCTL     0x00400  /* TX Control - RW */
-+// #define E1000_TCTL_RST    0x00000001    /* software reset */
-+#define E1000_TCTL_EN     0x00000002    /* enable tx */
-+// #define E1000_TCTL_BCE    0x00000004    /* busy check enable */
-+#define E1000_TCTL_PSP    0x00000008    /* pad short packets */
-+#define E1000_TCTL_CT     0x00000ff0    /* collision threshold */
-+#define E1000_TCTL_COLD   0x003ff000    /* collision distance */
-+// #define E1000_TCTL_SWXOFF 0x00400000    /* SW Xoff transmission */
-+// #define E1000_TCTL_PBE    0x00800000    /* Packet Burst Enable */
-+// #define E1000_TCTL_RTLC   0x01000000    /* Re-transmit on late collision */
-+// #define E1000_TCTL_NRTU   0x02000000    /* No Re-transmit on underrun */
-+// #define E1000_TCTL_MULR   0x10000000    /* Multiple request support */
-+
-+#define E1000_TIPG     0x00410  /* TX Inter-packet gap -RW */
-+
-+#define E1000_TXD_CMD_RS     0x08000000 /* Report Status */
-+#define E1000_TXD_STAT_DD    0x00000001 /* Descriptor Done */
++#define E1000_STATUS   (0x00008/4)  /* Device Status - RO */
 +
 +volatile uint32_t *e1000_bar0;      // memory mapped E1000 device registers
 +
++size_t e1000_transmit(const void *buffer, size_t size);
 +
 +/* Receive Control */
 +
 +
  #endif  // SOL >= 6
 diff --git a/kern/pci.c b/kern/pci.c
-index 784e072..519f172 100644
+index 784e072..5ad5ae7 100644
 --- a/kern/pci.c
 +++ b/kern/pci.c
 @@ -4,6 +4,7 @@
@@ -209,15 +231,23 @@ index 784e072..519f172 100644
  		f->bus->busno, f->dev, f->func,
  		PCI_VENDOR(f->dev_id), PCI_PRODUCT(f->dev_id));
 +	cprintf("Device status for E1000 BAR 0 is 0x%x\n",
-+		e1000_bar0[E1000_STATUS / sizeof(uint32_t)]);
++		e1000_bar0[E1000_STATUS]);
  }
  
  int
 diff --git a/kern/syscall.c b/kern/syscall.c
-index e794918..fb9afa9 100644
+index e794918..10baf38 100644
 --- a/kern/syscall.c
 +++ b/kern/syscall.c
-@@ -391,7 +391,7 @@ static int
+@@ -12,6 +12,7 @@
+ #include <kern/console.h>
+ #include <kern/sched.h>
+ #include <kern/time.h>
++#include <kern/e1000.h>
+ 
+ // Print a string to the system console.
+ // The string is exactly 'len' characters long.
+@@ -391,7 +392,7 @@ static int
  sys_time_msec(void)
  {
  	// LAB 6: Your code here.
@@ -226,7 +256,21 @@ index e794918..fb9afa9 100644
  }
  
  static void
-@@ -453,6 +453,8 @@ syscall(uint32_t syscallno, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4,
+@@ -413,6 +414,13 @@ sys_ide_sleep(void *chan, size_t nsecs, int op)
+ 	sched_yield();
+ }
+ 
++static int
++sys_send(const void *buffer, size_t length)
++{
++	user_mem_assert(curenv, buffer, length, PTE_U);
++	return (int)e1000_transmit(buffer, length);
++}
++
+ // Dispatches to the correct kernel function, passing the arguments.
+ int32_t
+ syscall(uint32_t syscallno, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4, uint32_t a5)
+@@ -453,8 +461,12 @@ syscall(uint32_t syscallno, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4,
  		return sys_ipc_try_send(a1, a2, (void *)a3, a4);
  	case SYS_ipc_recv:
  		return sys_ipc_recv((void *)a1);
@@ -234,7 +278,11 @@ index e794918..fb9afa9 100644
 +		return sys_time_msec();
  	case SYS_ide_sleep:
  		sys_ide_sleep((void *)a1, a2, (int)a3);
++	case SYS_send:
++		return sys_send((const void*)a1, a2);
  	case NSYSCALLS:
+ 	default:
+ 		return -E_INVAL;
 diff --git a/kern/trap.c b/kern/trap.c
 index 37014bf..ce81dd4 100644
 --- a/kern/trap.c
@@ -258,6 +306,20 @@ index 37014bf..ce81dd4 100644
  	// Unexpected trap: The user process or the kernel has a bug.
  	print_trapframe(tf);
  	if (tf->tf_cs == GD_KT)
+diff --git a/lib/syscall.c b/lib/syscall.c
+index 8663cfd..210f9de 100644
+--- a/lib/syscall.c
++++ b/lib/syscall.c
+@@ -170,3 +170,9 @@ sys_ide_sleep(void *chan, size_t nsecs, int op)
+ 	// can't use sysenter, since we need to restore our flags from trapframe
+ 	syscall(SYS_ide_sleep, 0, (uint32_t)chan, nsecs, (uint32_t)op, 0, 0);
+ }
++
++int 
++sys_send(const void *buffer, size_t length)
++{
++	return sysenter(SYS_send, (uint32_t)buffer, length, 0, 0);
++}
 diff --git a/user/testtime.c b/user/testtime.c
 index 68e350c..26a9975 100644
 --- a/user/testtime.c
