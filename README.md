@@ -480,6 +480,18 @@ primespipe: OK (22.6s)
 Score: 150/150
 ```
 
+## LAB 6:
+![CI](https://github.com/k0Iry/6.828_2018_mit_jos/workflows/CI/badge.svg?branch=lab6)
+
+```
+make[1]: Leaving directory '/home/runner/work/6.828_2018_mit_jos/6.828_2018_mit_jos'
+testtime: OK (8.2s) 
+pci attach: OK (0.7s) 
+testoutput [5 packets]: OK (1.1s) 
+testoutput [100 packets]: OK (0.9s) 
+Part A score: 35/35
+```
+
 XV6:
 
 see homework folder
