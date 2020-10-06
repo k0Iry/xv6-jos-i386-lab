@@ -1,4 +1,4 @@
-From 9512416da80416bf07724068b46e1ea5eec4b655 Mon Sep 17 00:00:00 2001
+From cf4f0893c5f512337aeefaf8938ab62442de9c15 Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Thu, 1 Oct 2020 13:06:11 +0000
 Subject: [PATCH] start with lab 6
@@ -27,8 +27,9 @@ reading from file qemu.pcap, link-type EN10MB (Ethernet)
  kern/syscall.c  |  14 ++++++-
  kern/trap.c     |   5 +--
  lib/syscall.c   |   6 +++
+ net/output.c    |  17 ++++++++
  user/testtime.c |   4 +-
- 9 files changed, 149 insertions(+), 6 deletions(-)
+ 10 files changed, 166 insertions(+), 6 deletions(-)
 
 diff --git a/inc/lib.h b/inc/lib.h
 index 0850acb..24bec7a 100644
@@ -55,7 +56,7 @@ index 23c5278..612f9be 100644
  };
  
 diff --git a/kern/e1000.c b/kern/e1000.c
-index 192f317..955465d 100644
+index 192f317..35ae3f3 100644
 --- a/kern/e1000.c
 +++ b/kern/e1000.c
 @@ -1,4 +1,105 @@
@@ -128,9 +129,9 @@ index 192f317..955465d 100644
 +    e1000_bar0[E1000_TIPG] = 10;        // IEEE 802.3 standard IPG
 +
 +    /* self test with overflow and transmission*/
-+    char *sample = "hello, world, let's transmit something\n";
-+    for (int i = 0; i < 142; i++)
-+        e1000_transmit(sample, strlen(sample));
++    // char *sample = "hello, world, let's transmit something\n";
++    // for (int i = 0; i < 142; i++)
++    //     e1000_transmit(sample, strlen(sample));
 +
 +    return 0;
 +}
@@ -320,8 +321,34 @@ index 8663cfd..210f9de 100644
 +{
 +	return sysenter(SYS_send, (uint32_t)buffer, length, 0, 0);
 +}
+diff --git a/net/output.c b/net/output.c
+index f577c4e..ef24f49 100644
+--- a/net/output.c
++++ b/net/output.c
+@@ -10,4 +10,21 @@ output(envid_t ns_envid)
+ 	// LAB 6: Your code here:
+ 	// 	- read a packet from the network server
+ 	//	- send the packet to the device driver
++	int32_t reqno;
++	uint32_t whom;
++	int perm;
++	int r;
++
++	while (1)
++	{
++		reqno = ipc_recv((int32_t *) &whom, (void *)&nsipcbuf, &perm);
++		if (reqno == NSREQ_OUTPUT)
++		{
++			while ((r = sys_send((const void*)nsipcbuf.pkt.jp_data, (size_t)nsipcbuf.pkt.jp_len)) == 0);
++			if (r < nsipcbuf.pkt.jp_len)
++			{
++				cprintf("Sent %d bytes, remaining %d bytes to send\n", r, (nsipcbuf.pkt.jp_len - r));
++			}
++		}
++	}
+ }
 diff --git a/user/testtime.c b/user/testtime.c
-index 68e350c..26a9975 100644
+index 68e350c..435e3d7 100644
 --- a/user/testtime.c
 +++ b/user/testtime.c
 @@ -22,7 +22,9 @@ umain(int argc, char **argv)
@@ -331,7 +358,7 @@ index 68e350c..26a9975 100644
 -	for (i = 0; i < 50; i++)
 +	// since I enabled disk interrupt, so count down will not be
 +	// continous sometimes, so increase the yielding times
-+	for (i = 0; i < 400; i++)
++	for (i = 0; i < 1000; i++)
  		sys_yield();
  
  	cprintf("starting count down: ");
