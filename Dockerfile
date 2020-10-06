@@ -4,7 +4,7 @@ ENV LD_LIBRARY_PATH "usr/local/lib":$LD_LIBRARY_PATH
 ENV SHELL /bin/bash
 
 RUN DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y \
-    --no-install-recommends build-essential gdb git vim ca-certificates gcc-multilib \
+    --no-install-recommends build-essential gdb git vim ca-certificates gcc-multilib tcpdump \
     python libsdl1.2-dev libtool-bin libglib2.0-dev libz-dev libpixman-1-dev locales && \
     sed -i -e 's/# en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen && \
     dpkg-reconfigure --frontend=noninteractive locales && update-locale LANG=en_US.UTF-8 && \
