@@ -14,6 +14,5 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y \
 
 VOLUME /usr/src/app
 WORKDIR /usr/src/app
-USER nobody
 
 CMD ["/bin/bash"]
