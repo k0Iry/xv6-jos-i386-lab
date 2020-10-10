@@ -1,4 +1,4 @@
-From b49a761f40e70dc378472bb4f6672da81ca530c0 Mon Sep 17 00:00:00 2001
+From 9388ea7f08b0e596797077883cd58a3851f3266e Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Thu, 1 Oct 2020 13:06:11 +0000
 Subject: [PATCH] start with lab 6
@@ -37,7 +37,7 @@ e1000: unicast match[0]: 52:54:00:12:34:56
  .github/workflows/c-cpp.yml |  29 +++++
  inc/lib.h                   |   2 +
  inc/syscall.h               |   2 +
- kern/e1000.c                | 205 ++++++++++++++++++++++++++++++++++++
+ kern/e1000.c                | 207 ++++++++++++++++++++++++++++++++++++
  kern/e1000.h                |  14 +++
  kern/pci.c                  |   8 ++
  kern/syscall.c              |  23 +++-
@@ -46,7 +46,7 @@ e1000: unicast match[0]: 52:54:00:12:34:56
  net/input.c                 |  16 +++
  net/output.c                |  23 ++++
  user/testtime.c             |   4 +-
- 12 files changed, 337 insertions(+), 6 deletions(-)
+ 12 files changed, 339 insertions(+), 6 deletions(-)
  create mode 100644 .github/workflows/c-cpp.yml
 
 diff --git a/.github/workflows/c-cpp.yml b/.github/workflows/c-cpp.yml
@@ -112,10 +112,10 @@ index 23c5278..fff0d91 100644
  };
  
 diff --git a/kern/e1000.c b/kern/e1000.c
-index 192f317..16c55d4 100644
+index 192f317..2ee1867 100644
 --- a/kern/e1000.c
 +++ b/kern/e1000.c
-@@ -1,4 +1,209 @@
+@@ -1,4 +1,211 @@
  #include <kern/e1000.h>
  #include <kern/pmap.h>
 +#include <kern/pci.h>
@@ -320,6 +320,8 @@ index 192f317..16c55d4 100644
 +    if (size < length)
 +        return -1;
 +    memcpy(buffer, (const void*)(KADDR((uint32_t)rdesc[current].addr)), length);
++    // zero the status byte in the descriptor to make it ready for reuse by hardware
++    rdesc[current].status &= ~E1000_RXD_STAT_DD;
 +    // update tail, letting card know there is one more RDESC allocated for use
 +    e1000_bar0[E1000_RDT] = current;
 +    
