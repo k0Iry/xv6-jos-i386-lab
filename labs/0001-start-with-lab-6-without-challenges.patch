@@ -1,0 +1,632 @@
+From f8fdf75679dcc3d5bb033e1fd580890d5dbbb5dc Mon Sep 17 00:00:00 2001
+From: Aaron <kljsandjb@me.com>
+Date: Thu, 1 Oct 2020 13:06:11 +0000
+Subject: [PATCH] start with lab 6(without challenges)
+
+Part A:
+Initialization and transmitting packets finished.
+
+Part B:
+Initlialized receiving(RX)
+Ready to receive
+Finished
+
+TX:
+root@9dfe7b025747:/usr/src/app/lab# tcpdump -XXnr qemu.pcap
+reading from file qemu.pcap, link-type EN10MB (Ethernet)
+20:44:41.795394 [|ether]
+        0x0000:  6865 6c6c 6f2c 2077 6f72 6c64 0a         hello,.world.
+20:44:41.797814 [|ether]
+        0x0000:  6865 6c6c 6f2c 2077 6f72 6c64 0a         hello,.world.
+20:44:41.801232 [|ether]
+        0x0000:  6865 6c6c 6f2c 2077 6f72 6c64 0a         hello,.world.
+20:44:41.806917 [|ether]
+        0x0000:  6865 6c6c 6f2c 2077 6f72 6c64 0a         hello,.world.
+20:44:41.812211 [|ether]
+        0x0000:  6865 6c6c 6f2c 2077 6f72 6c64 0a         hello,.world.
+
+RX:
+e1000: tx disabled
+e1000: RCTL: 127, mac_reg[RCTL] = 0x4008002
+FS is running
+FS can do I/O
+Device 1 presence: 1
+Sending ARP announcement...
+e1000: index 0: 0x5b000 : 900002a 0
+e1000: unicast match[0]: 52:54:00:12:34:56
+---
+ .github/workflows/c-cpp.yml |  29 +++++
+ inc/lib.h                   |   2 +
+ inc/syscall.h               |   2 +
+ kern/e1000.c                | 207 ++++++++++++++++++++++++++++++++++++
+ kern/e1000.h                |  14 +++
+ kern/pci.c                  |   8 ++
+ kern/syscall.c              |  23 +++-
+ kern/trap.c                 |   5 +-
+ lib/syscall.c               |  12 +++
+ net/input.c                 |  16 +++
+ net/output.c                |  23 ++++
+ user/httpd.c                |  34 +++++-
+ user/testtime.c             |   4 +-
+ 13 files changed, 370 insertions(+), 9 deletions(-)
+ create mode 100644 .github/workflows/c-cpp.yml
+
+diff --git a/.github/workflows/c-cpp.yml b/.github/workflows/c-cpp.yml
+new file mode 100644
+index 0000000..a28d492
+--- /dev/null
++++ b/.github/workflows/c-cpp.yml
+@@ -0,0 +1,29 @@
++name: CI
++
++# Controls when the action will run. Triggers the workflow on push or pull request
++# events but only for the lab4 branch
++on:
++  push:
++    branches: [ lab6 ]
++  pull_request:
++    branches: [ lab6 ]
++
++# A workflow run is made up of one or more jobs that can run sequentially or in parallel
++jobs:
++  # This workflow contains a single job called "build"
++  build:
++    # The type of runner that the job will run on
++    runs-on: ubuntu-latest
++
++    # Steps represent a sequence of tasks that will be executed as part of the job
++    steps:
++    # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
++    - uses: actions/checkout@v2
++
++    # Runs a single command using the runners shell
++    - name: Install qemu
++      run: sudo apt-get update && sudo apt-get install -y --no-install-recommends qemu build-essential gcc-multilib
++
++    # Runs a set of commands using the runners shell
++    - name: Run make grade
++      run: make grade
+\ No newline at end of file
+diff --git a/inc/lib.h b/inc/lib.h
+index 0850acb..9a67a8e 100644
+--- a/inc/lib.h
++++ b/inc/lib.h
+@@ -61,6 +61,8 @@ int	sys_ipc_try_send(envid_t to_env, uint32_t value, void *pg, int perm);
+ int	sys_ipc_recv(void *rcv_pg);
+ unsigned int sys_time_msec(void);
+ void sys_ide_sleep(void *chan, size_t nsecs, int op);
++int sys_send(const void *buffer, size_t length);
++int sys_recv(void *buffer, size_t length);
+ 
+ // This must be inlined.  Exercise for reader: why?
+ static inline envid_t __attribute__((always_inline))
+diff --git a/inc/syscall.h b/inc/syscall.h
+index 23c5278..fff0d91 100644
+--- a/inc/syscall.h
++++ b/inc/syscall.h
+@@ -19,6 +19,8 @@ enum {
+ 	SYS_ipc_recv,
+ 	SYS_time_msec,
+ 	SYS_ide_sleep,
++	SYS_send,
++	SYS_recv,
+ 	NSYSCALLS
+ };
+ 
+diff --git a/kern/e1000.c b/kern/e1000.c
+index 192f317..2ee1867 100644
+--- a/kern/e1000.c
++++ b/kern/e1000.c
+@@ -1,4 +1,211 @@
+ #include <kern/e1000.h>
+ #include <kern/pmap.h>
++#include <kern/pci.h>
++#include <inc/string.h>
+ 
+ // LAB 6: Your driver code here
++
++// divided by 4 for use as uint32_t[] indices.
++
++// TX
++#define E1000_TDBAL    (0x03800/4)  /* TX Descriptor Base Address Low - RW */
++#define E1000_TDBAH    (0x03804/4)  /* TX Descriptor Base Address High - RW */
++#define E1000_TDLEN    (0x03808/4)  /* TX Descriptor Length - RW */
++#define E1000_TDH      (0x03810/4)  /* TX Descriptor Head - RW */
++#define E1000_TDT      (0x03818/4)  /* TX Descripotr Tail - RW */
++
++/* Transmit Control */
++#define E1000_TCTL     (0x00400/4)  /* TX Control - RW */
++    #define E1000_TCTL_EN     0x00000002    /* enable tx */
++    #define E1000_TCTL_PSP    0x00000008    /* pad short packets */
++    #define E1000_TCTL_COLD   0x003ff000    /* collision distance */
++
++#define E1000_TIPG     (0x00410/4)  /* TX Inter-packet gap -RW */
++
++#define E1000_TXD_CMD_RS     0x08000000 /* Report Status */
++#define E1000_TXD_CMD_EOP    0x01000000 /* End of Packet */
++#define E1000_TXD_STAT_DD    0x00000001 /* Descriptor Done */
++
++// RX
++#define E1000_RDBAL    (0x02800/4)  /* RX Descriptor Base Address Low - RW */
++#define E1000_RDBAH    (0x02804/4)  /* RX Descriptor Base Address High - RW */
++#define E1000_RDLEN    (0x02808/4)  /* RX Descriptor Length - RW */
++#define E1000_RDH      (0x02810/4)  /* RX Descriptor Head - RW */
++#define E1000_RDT      (0x02818/4)  /* RX Descriptor Tail - RW */
++
++#define E1000_MTA      (0x05200/4)  /* Multicast Table Array - RW Array */
++#define E1000_RAL      (0x05400/4)  /* Receive Address Low - RW Array */
++#define E1000_RAH      (0x05404/4)  /* Receive Address High - RW Array */
++#define E1000_RAH_AV  0x80000000        /* Receive descriptor valid */
++#define E1000_IMS      (0x000D0/4)  /* Interrupt Mask Set - RW */
++
++#define E1000_RXD_STAT_DD       0x01    /* Descriptor Done */
++#define E1000_RXD_STAT_EOP      0x02    /* End of Packet */
++
++/* Receive Control */
++#define E1000_RCTL     (0x00100/4)  /* RX Control - RW */
++    #define E1000_RCTL_EN             0x00000002    /* enable */
++    #define E1000_RCTL_SZ_2048        0x00000000    /* rx buffer size 2048 */
++    // #define E1000_RCTL_LPE            0x00000020    /* long packet enable */
++    #define E1000_RCTL_LBM_NO         0x00000000    /* no loopback mode */
++    #define E1000_RCTL_SECRC          0x04000000    /* Strip Ethernet CRC */
++    #define E1000_RCTL_BAM            0x00008000    /* broadcast enable */
++
++#define MTU 1518
++
++// register descriptor layout, 64 descriptors, each with 16 byte
++// 8 descriptors within a group, total 8 groups, 1KB ring buffer.
++// needs to be 16-byte aligned
++struct tx_desc
++{
++	uint64_t addr;  // only fill low 32 bits
++	uint16_t length;
++	uint8_t cso;
++	uint8_t cmd;
++	uint8_t status;
++	uint8_t css;
++	uint16_t special;
++} __attribute__ ((aligned (16)));
++
++/* Receive Descriptor */
++struct rx_desc {
++    uint64_t addr; /* Address of the descriptor's data buffer */
++    uint16_t length;     /* Length of data DMAed into data buffer */
++    uint16_t csum;       /* Packet checksum */
++    uint8_t status;      /* Descriptor status */
++    uint8_t errors;      /* Descriptor Errors */
++    uint16_t special;
++} __attribute__ ((aligned (16)));
++
++struct tx_desc tdesc[64];  // TDESC ring buffer, max 64
++struct rx_desc rdesc[128]; // RDESC ring buffer, min 128
++
++static void init_tx()
++{
++    // allocating buffer space for each TDESC, a PAGE can hold 2 MTU
++    size_t tdesc_length = sizeof(tdesc) / sizeof(struct tx_desc);
++    for (int i = 0; i < tdesc_length; i+=2)
++    {
++        tdesc[i].addr = page2pa(page_alloc(ALLOC_ZERO));
++        tdesc[i].cmd |= (E1000_TXD_CMD_RS >> 24); // set RS bit to report status of each descriptor
++        tdesc[i].status |= E1000_TXD_STAT_DD; // enable DD bit by default, clear when transmitting
++        
++        // assign another half to the second one
++        tdesc[i + 1].addr = tdesc[i].addr + PGSIZE / 2;
++        tdesc[i + 1].cmd |= (E1000_TXD_CMD_RS >> 24);
++        tdesc[i + 1].status |= E1000_TXD_STAT_DD;
++    }
++
++    // perform initialization in Chapter 14.5, for TX
++    e1000_bar0[E1000_TDBAH] = 0;     // high 32 bit is cleared
++    e1000_bar0[E1000_TDBAL] = PADDR(tdesc);     // base address as descriptor array's physical address
++    e1000_bar0[E1000_TDLEN ] = sizeof(tdesc);    // total 1024 bytes
++    e1000_bar0[E1000_TDH] = 0x0;        // initialized as 0, Hardware is responsible to update this
++    e1000_bar0[E1000_TDT] = 0x0;        // initialized as 0, Software is responsible to update this
++    e1000_bar0[E1000_TCTL] = ((0x40 << 12) & E1000_TCTL_COLD) | E1000_TCTL_PSP | E1000_TCTL_EN;    // enable TX, full-duplex operation
++    e1000_bar0[E1000_TIPG] = 10;        // IEEE 802.3 standard IPG
++
++    /* self test with overflow and transmission*/
++    // char *sample = "hello, world, let's transmit something\n";
++    // for (int i = 0; i < 142; i++)
++    //     e1000_transmit(sample, strlen(sample));
++}
++
++static void init_rx()
++{
++    size_t rdesc_length = sizeof(rdesc) / sizeof(struct rx_desc);
++    for (int i = 0; i < rdesc_length; i+=2)
++    {
++        rdesc[i].addr = page2pa(page_alloc(ALLOC_ZERO));
++        rdesc[i + 1].addr = rdesc[i].addr + PGSIZE / 2;
++    }
++    
++    e1000_bar0[E1000_RDBAH] = 0;
++    e1000_bar0[E1000_RDBAL] = PADDR(rdesc);
++    e1000_bar0[E1000_RDLEN] = sizeof(rdesc);
++    e1000_bar0[E1000_RDH] = 0;
++    // To prevent the index registers to wrap around, the OS always leaves one RX descriptor unused
++    e1000_bar0[E1000_RDT] = rdesc_length - 1;
++    // MAC address of QEMU's ethernet card
++    e1000_bar0[E1000_RAL] = 0x12005452;
++    *(uint16_t *)(e1000_bar0 + E1000_RAH) = 0x5634;
++    e1000_bar0[E1000_RAH] |= E1000_RAH_AV;
++    // 128 bit of MTA init to 0b
++    e1000_bar0[E1000_MTA] = 0;
++    e1000_bar0[E1000_MTA + 1] = 0;
++    e1000_bar0[E1000_MTA + 2] = 0;
++    e1000_bar0[E1000_MTA + 3] = 0;
++    // not enable IRQ for now
++    e1000_bar0[E1000_IMS] = 0;
++    e1000_bar0[E1000_RCTL] = E1000_RCTL_EN | E1000_RCTL_SECRC | E1000_RCTL_SZ_2048 | E1000_RCTL_BAM;
++}
++
++//  wrap pci_func_enable function
++int pci_func_attach(struct pci_func *pcif)
++{
++    pci_func_enable(pcif);
++
++    init_tx();
++    init_rx();
++
++    return 0;
++}
++
++/*
++ * transmit a packet
++ * 
++ * return number of bytes transmitted
++ * return 0 if this packet needs re-transmission
++*/
++size_t e1000_transmit(const void *buffer, size_t size)
++{
++    uint32_t current = e1000_bar0[E1000_TDT];
++    if (tdesc[current].status & E1000_TXD_STAT_DD)
++    {
++        tdesc[current].status &= ~E1000_TXD_STAT_DD;
++        void *addr = (void *)KADDR((uint32_t)tdesc[current].addr);
++        size_t length = MIN(size, MTU);
++        memcpy(addr, buffer, length);
++        tdesc[current].cmd |= (E1000_TXD_CMD_EOP >> 24);      // End of Packet
++        tdesc[current].length = length;
++        // update tail pointer, inform network card
++        uint32_t next = current + 1;
++        e1000_bar0[E1000_TDT] = next % (sizeof(tdesc) / sizeof(struct tx_desc));
++        return length;
++    }
++    else
++    {
++        // require for re-transmission
++        cprintf("lost packet 0x%x\n", buffer);
++        return 0;
++    }
++}
++
++/*
++ * receive a packet
++ *
++ * return number of bytes from oldest buffer
++ * return 0 if this packet needs to wait
++ * return -1 if this packet is too long (more space)
++*/
++size_t e1000_receive(void *buffer, size_t size)
++{
++    // to receive packet, it should start beyond RDT
++    uint32_t current = (e1000_bar0[E1000_RDT] + 1) % (sizeof(rdesc) / sizeof(struct rx_desc));
++    if (!(rdesc[current].status & E1000_RXD_STAT_DD))
++    {
++        // RTH == RTD: buffer is empty, stop receiving
++        return 0;
++    }
++
++    uint32_t length = rdesc[current].length;
++    if (size < length)
++        return -1;
++    memcpy(buffer, (const void*)(KADDR((uint32_t)rdesc[current].addr)), length);
++    // zero the status byte in the descriptor to make it ready for reuse by hardware
++    rdesc[current].status &= ~E1000_RXD_STAT_DD;
++    // update tail, letting card know there is one more RDESC allocated for use
++    e1000_bar0[E1000_RDT] = current;
++    
++    return length;
++}
+\ No newline at end of file
+diff --git a/kern/e1000.h b/kern/e1000.h
+index 8b5a513..f82e492 100644
+--- a/kern/e1000.h
++++ b/kern/e1000.h
+@@ -1,3 +1,17 @@
+ #ifndef JOS_KERN_E1000_H
+ #define JOS_KERN_E1000_H
++
++#include <inc/types.h>
++
++#define E1000_VENDOR_ID 0x8086
++#define E1000_DEVICE_ID 0x100E
++
++#define E1000_STATUS   (0x00008/4)  /* Device Status - RO */
++
++volatile uint32_t *e1000_bar0;      // memory mapped E1000 device registers
++
++size_t e1000_transmit(const void *buffer, size_t size);
++size_t e1000_receive(void *buffer, size_t size);
++
++
+ #endif  // SOL >= 6
+diff --git a/kern/pci.c b/kern/pci.c
+index 784e072..5ad5ae7 100644
+--- a/kern/pci.c
++++ b/kern/pci.c
+@@ -4,6 +4,7 @@
+ #include <kern/pci.h>
+ #include <kern/pcireg.h>
+ #include <kern/e1000.h>
++#include <kern/pmap.h>
+ 
+ // Flag to do "lspci" at bootup
+ static int pci_show_devs = 1;
+@@ -15,6 +16,7 @@ static uint32_t pci_conf1_data_ioport = 0x0cfc;
+ 
+ // Forward declarations
+ static int pci_bridge_attach(struct pci_func *pcif);
++extern int pci_func_attach(struct pci_func *pcif);
+ 
+ // PCI driver table
+ struct pci_driver {
+@@ -31,6 +33,7 @@ struct pci_driver pci_attach_class[] = {
+ // pci_attach_vendor matches the vendor ID and device ID of a PCI device. key1
+ // and key2 should be the vendor ID and device ID respectively
+ struct pci_driver pci_attach_vendor[] = {
++	{ E1000_VENDOR_ID, E1000_DEVICE_ID, &pci_func_attach },
+ 	{ 0, 0, 0 },
+ };
+ 
+@@ -233,6 +236,9 @@ pci_func_enable(struct pci_func *f)
+ 		f->reg_base[regnum] = base;
+ 		f->reg_size[regnum] = size;
+ 
++		if (regnum == 0)
++			e1000_bar0 = mmio_map_region(base, size);
++
+ 		if (size && !base)
+ 			cprintf("PCI device %02x:%02x.%d (%04x:%04x) "
+ 				"may be misconfigured: "
+@@ -245,6 +251,8 @@ pci_func_enable(struct pci_func *f)
+ 	cprintf("PCI function %02x:%02x.%d (%04x:%04x) enabled\n",
+ 		f->bus->busno, f->dev, f->func,
+ 		PCI_VENDOR(f->dev_id), PCI_PRODUCT(f->dev_id));
++	cprintf("Device status for E1000 BAR 0 is 0x%x\n",
++		e1000_bar0[E1000_STATUS]);
+ }
+ 
+ int
+diff --git a/kern/syscall.c b/kern/syscall.c
+index e794918..3faf2b0 100644
+--- a/kern/syscall.c
++++ b/kern/syscall.c
+@@ -12,6 +12,7 @@
+ #include <kern/console.h>
+ #include <kern/sched.h>
+ #include <kern/time.h>
++#include <kern/e1000.h>
+ 
+ // Print a string to the system console.
+ // The string is exactly 'len' characters long.
+@@ -391,7 +392,7 @@ static int
+ sys_time_msec(void)
+ {
+ 	// LAB 6: Your code here.
+-	panic("sys_time_msec not implemented");
++	return time_msec();
+ }
+ 
+ static void
+@@ -413,6 +414,20 @@ sys_ide_sleep(void *chan, size_t nsecs, int op)
+ 	sched_yield();
+ }
+ 
++static int
++sys_send(const void *buffer, size_t length)
++{
++	user_mem_assert(curenv, buffer, length, PTE_U);
++	return (int)e1000_transmit(buffer, length);
++}
++
++static int
++sys_recv(void *buffer, size_t length)
++{
++	user_mem_assert(curenv, buffer, length, PTE_U);
++	return (int)e1000_receive(buffer, length);
++}
++
+ // Dispatches to the correct kernel function, passing the arguments.
+ int32_t
+ syscall(uint32_t syscallno, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4, uint32_t a5)
+@@ -453,8 +468,14 @@ syscall(uint32_t syscallno, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4,
+ 		return sys_ipc_try_send(a1, a2, (void *)a3, a4);
+ 	case SYS_ipc_recv:
+ 		return sys_ipc_recv((void *)a1);
++	case SYS_time_msec:
++		return sys_time_msec();
+ 	case SYS_ide_sleep:
+ 		sys_ide_sleep((void *)a1, a2, (int)a3);
++	case SYS_send:
++		return sys_send((const void*)a1, a2);
++	case SYS_recv:
++		return sys_recv((void *)a1, a2);
+ 	case NSYSCALLS:
+ 	default:
+ 		return -E_INVAL;
+diff --git a/kern/trap.c b/kern/trap.c
+index 37014bf..ce81dd4 100644
+--- a/kern/trap.c
++++ b/kern/trap.c
+@@ -242,6 +242,7 @@ trap_dispatch(struct Trapframe *tf)
+ 		switch (tf->tf_trapno)
+ 		{
+ 		case IRQ_OFFSET + IRQ_TIMER:
++			time_tick();
+ 			lapic_eoi();
+ 			sched_yield();
+ 			break;
+@@ -296,10 +297,6 @@ trap_dispatch(struct Trapframe *tf)
+ 	// triggered on every CPU.
+ 	// LAB 6: Your code here.
+ 
+-
+-	// Handle keyboard and serial interrupts.
+-	// LAB 5: Your code here.
+-
+ 	// Unexpected trap: The user process or the kernel has a bug.
+ 	print_trapframe(tf);
+ 	if (tf->tf_cs == GD_KT)
+diff --git a/lib/syscall.c b/lib/syscall.c
+index 8663cfd..1438f02 100644
+--- a/lib/syscall.c
++++ b/lib/syscall.c
+@@ -170,3 +170,15 @@ sys_ide_sleep(void *chan, size_t nsecs, int op)
+ 	// can't use sysenter, since we need to restore our flags from trapframe
+ 	syscall(SYS_ide_sleep, 0, (uint32_t)chan, nsecs, (uint32_t)op, 0, 0);
+ }
++
++int 
++sys_send(const void *buffer, size_t length)
++{
++	return sysenter(SYS_send, (uint32_t)buffer, length, 0, 0);
++}
++
++int 
++sys_recv(void *buffer, size_t length)
++{
++	return sysenter(SYS_recv, (uint32_t)buffer, length, 0, 0);
++}
+diff --git a/net/input.c b/net/input.c
+index 4e08f0f..8a11233 100644
+--- a/net/input.c
++++ b/net/input.c
+@@ -13,4 +13,20 @@ input(envid_t ns_envid)
+ 	// Hint: When you IPC a page to the network server, it will be
+ 	// reading from it for a while, so don't immediately receive
+ 	// another packet in to the same physical page.
++	int r;
++	// trigger a page fault in user space, otherwise we will fault in kernel mode....
++	nsipcbuf.pkt.jp_data[0] = '\0';
++
++	while (1)
++	{
++		while ((r = sys_recv(nsipcbuf.pkt.jp_data, 1518)) == 0) sys_yield();
++		if (r > 0)
++		{
++			nsipcbuf.pkt.jp_len = r;
++			ipc_send(ns_envid, NSREQ_INPUT, (void *)&nsipcbuf, PTE_P|PTE_W|PTE_U);
++			// we just enabled our parent env, yield a bit waiting for it to run
++			for (int i = 0; i < 10; i++)
++				sys_yield();
++		}
++	}
+ }
+diff --git a/net/output.c b/net/output.c
+index f577c4e..9d483fb 100644
+--- a/net/output.c
++++ b/net/output.c
+@@ -10,4 +10,27 @@ output(envid_t ns_envid)
+ 	// LAB 6: Your code here:
+ 	// 	- read a packet from the network server
+ 	//	- send the packet to the device driver
++	int32_t reqno;
++	uint32_t whom;
++	int perm;
++	int r;
++
++	while (1)
++	{
++		reqno = ipc_recv((int32_t *) &whom, (void *)&nsipcbuf, &perm);
++		char *ptr = nsipcbuf.pkt.jp_data;
++		size_t total = (size_t)nsipcbuf.pkt.jp_len;
++		if (reqno == NSREQ_OUTPUT)
++		{
++		retry:
++			while ((r = sys_send((const void*)ptr, total)) == 0) sys_yield();
++			if (r < total)
++			{
++				ptr += r;
++				total -= r;
++				cprintf("Sent %d bytes, remaining %d bytes to send\n", r, total);
++				goto retry;
++			}
++		}
++	}
+ }
+diff --git a/user/httpd.c b/user/httpd.c
+index ede43bf..e94700c 100644
+--- a/user/httpd.c
++++ b/user/httpd.c
+@@ -77,7 +77,29 @@ static int
+ send_data(struct http_request *req, int fd)
+ {
+ 	// LAB 6: Your code here.
+-	panic("send_data not implemented");
++	// panic("send_data not implemented");
++	struct Stat stat;
++	int r;
++	if ((r = fstat(fd, &stat)) < 0)
++		panic("FSTAT: %e", r);
++	int length = stat.st_size;
++	char buffer[BUFFSIZE];
++	int offset;
++	for (offset = 0; offset < length; offset += BUFFSIZE)
++	{
++		memset(buffer, 0, BUFFSIZE);
++		if ((r = readn(fd, buffer, BUFFSIZE)) < 0)
++			panic("readn, %e", r);
++		write(req->sock, buffer, BUFFSIZE);
++	}
++
++	int remain = length - (offset - BUFFSIZE);
++	memset(buffer, 0, BUFFSIZE);
++	if ((r = readn(fd, buffer, remain)) < 0)
++			panic("readn, %e", r);
++	write(req->sock, buffer, remain);
++
++	return r;
+ }
+ 
+ static int
+@@ -223,12 +245,18 @@ send_file(struct http_request *req)
+ 	// set file_size to the size of the file
+ 
+ 	// LAB 6: Your code here.
+-	panic("send_file not implemented");
++	// panic("send_file not implemented");
++	struct Stat statbuf;
++	if ((r = stat(req->url, &statbuf)) < 0 || statbuf.st_isdir == 1)
++		return send_error(req, 404);
++
++	if ((fd = open(req->url, O_RDONLY)) < 0)
++		goto end;
+ 
+ 	if ((r = send_header(req, 200)) < 0)
+ 		goto end;
+ 
+-	if ((r = send_size(req, file_size)) < 0)
++	if ((r = send_size(req, statbuf.st_size)) < 0)
+ 		goto end;
+ 
+ 	if ((r = send_content_type(req)) < 0)
+diff --git a/user/testtime.c b/user/testtime.c
+index 68e350c..435e3d7 100644
+--- a/user/testtime.c
++++ b/user/testtime.c
+@@ -22,7 +22,9 @@ umain(int argc, char **argv)
+ 	int i;
+ 
+ 	// Wait for the console to calm down
+-	for (i = 0; i < 50; i++)
++	// since I enabled disk interrupt, so count down will not be
++	// continous sometimes, so increase the yielding times
++	for (i = 0; i < 1000; i++)
+ 		sys_yield();
+ 
+ 	cprintf("starting count down: ");
+-- 
+2.24.3 (Apple Git-128)
+
