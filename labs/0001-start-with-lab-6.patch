@@ -1,4 +1,4 @@
-From d344a93318acf0505e9d6033b780da29d8e68ea3 Mon Sep 17 00:00:00 2001
+From b49a761f40e70dc378472bb4f6672da81ca530c0 Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Thu, 1 Oct 2020 13:06:11 +0000
 Subject: [PATCH] start with lab 6
@@ -34,19 +34,19 @@ Sending ARP announcement...
 e1000: index 0: 0x5b000 : 900002a 0
 e1000: unicast match[0]: 52:54:00:12:34:56
 ---
- .github/workflows/c-cpp.yml |  29 ++++++
+ .github/workflows/c-cpp.yml |  29 +++++
  inc/lib.h                   |   2 +
  inc/syscall.h               |   2 +
- kern/e1000.c                | 198 ++++++++++++++++++++++++++++++++++++
+ kern/e1000.c                | 205 ++++++++++++++++++++++++++++++++++++
  kern/e1000.h                |  14 +++
  kern/pci.c                  |   8 ++
- kern/syscall.c              |  23 ++++-
+ kern/syscall.c              |  23 +++-
  kern/trap.c                 |   5 +-
  lib/syscall.c               |  12 +++
  net/input.c                 |  16 +++
- net/output.c                |  23 +++++
+ net/output.c                |  23 ++++
  user/testtime.c             |   4 +-
- 12 files changed, 330 insertions(+), 6 deletions(-)
+ 12 files changed, 337 insertions(+), 6 deletions(-)
  create mode 100644 .github/workflows/c-cpp.yml
 
 diff --git a/.github/workflows/c-cpp.yml b/.github/workflows/c-cpp.yml
@@ -112,10 +112,10 @@ index 23c5278..fff0d91 100644
  };
  
 diff --git a/kern/e1000.c b/kern/e1000.c
-index 192f317..7855507 100644
+index 192f317..16c55d4 100644
 --- a/kern/e1000.c
 +++ b/kern/e1000.c
-@@ -1,4 +1,202 @@
+@@ -1,4 +1,209 @@
  #include <kern/e1000.h>
  #include <kern/pmap.h>
 +#include <kern/pci.h>
@@ -198,12 +198,8 @@ index 192f317..7855507 100644
 +struct tx_desc tdesc[64];  // TDESC ring buffer, max 64
 +struct rx_desc rdesc[128]; // RDESC ring buffer, min 128
 +
-+//  wrap pci_func_enable function
-+int pci_func_attach(struct pci_func *pcif)
++static void init_tx()
 +{
-+    pci_func_enable(pcif);
-+
-+    /* init TX */
 +    // allocating buffer space for each TDESC, a PAGE can hold 2 MTU
 +    size_t tdesc_length = sizeof(tdesc) / sizeof(struct tx_desc);
 +    for (int i = 0; i < tdesc_length; i+=2)
@@ -231,8 +227,10 @@ index 192f317..7855507 100644
 +    // char *sample = "hello, world, let's transmit something\n";
 +    // for (int i = 0; i < 142; i++)
 +    //     e1000_transmit(sample, strlen(sample));
++}
 +
-+    /* init RX */
++static void init_rx()
++{
 +    size_t rdesc_length = sizeof(rdesc) / sizeof(struct rx_desc);
 +    for (int i = 0; i < rdesc_length; i+=2)
 +    {
@@ -258,6 +256,15 @@ index 192f317..7855507 100644
 +    // not enable IRQ for now
 +    e1000_bar0[E1000_IMS] = 0;
 +    e1000_bar0[E1000_RCTL] = E1000_RCTL_EN | E1000_RCTL_SECRC | E1000_RCTL_SZ_2048 | E1000_RCTL_BAM;
++}
++
++//  wrap pci_func_enable function
++int pci_func_attach(struct pci_func *pcif)
++{
++    pci_func_enable(pcif);
++
++    init_tx();
++    init_rx();
 +
 +    return 0;
 +}
