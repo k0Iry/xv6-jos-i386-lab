@@ -1,12 +1,14 @@
-From 92597b6d9a84368bf6df8d430da2e92adf576d48 Mon Sep 17 00:00:00 2001
+From 014e0818cad888293737215bdb9664de7ba16db0 Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Thu, 1 Oct 2020 13:06:11 +0000
 Subject: [PATCH] start with lab 6
 
-Part A: Initialization and transmitting packets
-finished.
+Part A:
+Initialization and transmitting packets finished.
 
-Part B: initlialized receiving(RX)
+Part B:
+Initlialized receiving(RX)
+Ready to receive
 
 TX:
 root@9dfe7b025747:/usr/src/app/lab# tcpdump -XXnr qemu.pcap
@@ -32,18 +34,19 @@ Sending ARP announcement...
 e1000: index 0: 0x5b000 : 900002a 0
 e1000: unicast match[0]: 52:54:00:12:34:56
 ---
- .github/workflows/c-cpp.yml |  29 +++++++
- inc/lib.h                   |   1 +
- inc/syscall.h               |   1 +
- kern/e1000.c                | 166 ++++++++++++++++++++++++++++++++++++
- kern/e1000.h                |  13 +++
+ .github/workflows/c-cpp.yml |  29 ++++++
+ inc/lib.h                   |   2 +
+ inc/syscall.h               |   2 +
+ kern/e1000.c                | 198 ++++++++++++++++++++++++++++++++++++
+ kern/e1000.h                |  14 +++
  kern/pci.c                  |   8 ++
- kern/syscall.c              |  14 ++-
+ kern/syscall.c              |  23 ++++-
  kern/trap.c                 |   5 +-
- lib/syscall.c               |   6 ++
+ lib/syscall.c               |  12 +++
+ net/input.c                 |  15 +++
  net/output.c                |  23 +++++
  user/testtime.c             |   4 +-
- 11 files changed, 264 insertions(+), 6 deletions(-)
+ 12 files changed, 329 insertions(+), 6 deletions(-)
  create mode 100644 .github/workflows/c-cpp.yml
 
 diff --git a/.github/workflows/c-cpp.yml b/.github/workflows/c-cpp.yml
@@ -83,34 +86,36 @@ index 0000000..a28d492
 +      run: make grade
 \ No newline at end of file
 diff --git a/inc/lib.h b/inc/lib.h
-index 0850acb..24bec7a 100644
+index 0850acb..9a67a8e 100644
 --- a/inc/lib.h
 +++ b/inc/lib.h
-@@ -61,6 +61,7 @@ int	sys_ipc_try_send(envid_t to_env, uint32_t value, void *pg, int perm);
+@@ -61,6 +61,8 @@ int	sys_ipc_try_send(envid_t to_env, uint32_t value, void *pg, int perm);
  int	sys_ipc_recv(void *rcv_pg);
  unsigned int sys_time_msec(void);
  void sys_ide_sleep(void *chan, size_t nsecs, int op);
 +int sys_send(const void *buffer, size_t length);
++int sys_recv(void *buffer, size_t length);
  
  // This must be inlined.  Exercise for reader: why?
  static inline envid_t __attribute__((always_inline))
 diff --git a/inc/syscall.h b/inc/syscall.h
-index 23c5278..612f9be 100644
+index 23c5278..fff0d91 100644
 --- a/inc/syscall.h
 +++ b/inc/syscall.h
-@@ -19,6 +19,7 @@ enum {
+@@ -19,6 +19,8 @@ enum {
  	SYS_ipc_recv,
  	SYS_time_msec,
  	SYS_ide_sleep,
 +	SYS_send,
++	SYS_recv,
  	NSYSCALLS
  };
  
 diff --git a/kern/e1000.c b/kern/e1000.c
-index 192f317..22fdc87 100644
+index 192f317..7855507 100644
 --- a/kern/e1000.c
 +++ b/kern/e1000.c
-@@ -1,4 +1,170 @@
+@@ -1,4 +1,202 @@
  #include <kern/e1000.h>
  #include <kern/pmap.h>
 +#include <kern/pci.h>
@@ -136,6 +141,7 @@ index 192f317..22fdc87 100644
 +#define E1000_TIPG     (0x00410/4)  /* TX Inter-packet gap -RW */
 +
 +#define E1000_TXD_CMD_RS     0x08000000 /* Report Status */
++#define E1000_TXD_CMD_EOP    0x01000000 /* End of Packet */
 +#define E1000_TXD_STAT_DD    0x00000001 /* Descriptor Done */
 +
 +// RX
@@ -151,11 +157,14 @@ index 192f317..22fdc87 100644
 +#define E1000_RAH_AV  0x80000000        /* Receive descriptor valid */
 +#define E1000_IMS      (0x000D0/4)  /* Interrupt Mask Set - RW */
 +
++#define E1000_RXD_STAT_DD       0x01    /* Descriptor Done */
++#define E1000_RXD_STAT_EOP      0x02    /* End of Packet */
++
 +/* Receive Control */
 +#define E1000_RCTL     (0x00100/4)  /* RX Control - RW */
 +    #define E1000_RCTL_EN             0x00000002    /* enable */
 +    #define E1000_RCTL_SZ_2048        0x00000000    /* rx buffer size 2048 */
-+    #define E1000_RCTL_LPE            0x00000020    /* long packet enable */
++    // #define E1000_RCTL_LPE            0x00000020    /* long packet enable */
 +    #define E1000_RCTL_LBM_NO         0x00000000    /* no loopback mode */
 +    #define E1000_RCTL_SECRC          0x04000000    /* Strip Ethernet CRC */
 +    #define E1000_RCTL_BAM            0x00008000    /* broadcast enable */
@@ -235,6 +244,7 @@ index 192f317..22fdc87 100644
 +    e1000_bar0[E1000_RDBAL] = PADDR(rdesc);
 +    e1000_bar0[E1000_RDLEN] = sizeof(rdesc);
 +    e1000_bar0[E1000_RDH] = 0;
++    // To prevent the index registers to wrap around, the OS always leaves one RX descriptor unused
 +    e1000_bar0[E1000_RDT] = rdesc_length - 1;
 +    // MAC address of QEMU's ethernet card
 +    e1000_bar0[E1000_RAL] = 0x12005452;
@@ -267,7 +277,7 @@ index 192f317..22fdc87 100644
 +        void *addr = (void *)KADDR((uint32_t)tdesc[current].addr);
 +        size_t length = MIN(size, MTU);
 +        memcpy(addr, buffer, length);
-+        tdesc[current].cmd |= 0b1;      // End of Packet
++        tdesc[current].cmd |= (E1000_TXD_CMD_EOP >> 24);      // End of Packet
 +        tdesc[current].length = length;
 +        // update tail pointer, inform network card
 +        uint32_t next = current + 1;
@@ -281,12 +291,39 @@ index 192f317..22fdc87 100644
 +        return 0;
 +    }
 +}
++
++/*
++ * receive a packet
++ *
++ * return number of bytes from oldest buffer
++ * return 0 if this packet needs to wait
++ * return -1 if this packet is too long (more space)
++*/
++size_t e1000_receive(void *buffer, size_t size)
++{
++    // to receive packet, it should start beyond RDT
++    uint32_t current = (e1000_bar0[E1000_RDT] + 1) % (sizeof(rdesc) / sizeof(struct rx_desc));
++    if (!(rdesc[current].status & E1000_RXD_STAT_DD))
++    {
++        // RTH == RTD: buffer is empty, stop receiving
++        return 0;
++    }
++
++    uint32_t length = rdesc[current].length;
++    if (size < length)
++        return -1;
++    memcpy(buffer, (const void*)(KADDR((uint32_t)rdesc[current].addr)), length);
++    // update tail, letting card know there is one more RDESC allocated for use
++    e1000_bar0[E1000_RDT] = current;
++    
++    return length;
++}
 \ No newline at end of file
 diff --git a/kern/e1000.h b/kern/e1000.h
-index 8b5a513..8621f43 100644
+index 8b5a513..f82e492 100644
 --- a/kern/e1000.h
 +++ b/kern/e1000.h
-@@ -1,3 +1,16 @@
+@@ -1,3 +1,17 @@
  #ifndef JOS_KERN_E1000_H
  #define JOS_KERN_E1000_H
 +
@@ -300,6 +337,7 @@ index 8b5a513..8621f43 100644
 +volatile uint32_t *e1000_bar0;      // memory mapped E1000 device registers
 +
 +size_t e1000_transmit(const void *buffer, size_t size);
++size_t e1000_receive(void *buffer, size_t size);
 +
 +
  #endif  // SOL >= 6
@@ -351,7 +389,7 @@ index 784e072..5ad5ae7 100644
  
  int
 diff --git a/kern/syscall.c b/kern/syscall.c
-index e794918..10baf38 100644
+index e794918..3faf2b0 100644
 --- a/kern/syscall.c
 +++ b/kern/syscall.c
 @@ -12,6 +12,7 @@
@@ -371,7 +409,7 @@ index e794918..10baf38 100644
  }
  
  static void
-@@ -413,6 +414,13 @@ sys_ide_sleep(void *chan, size_t nsecs, int op)
+@@ -413,6 +414,20 @@ sys_ide_sleep(void *chan, size_t nsecs, int op)
  	sched_yield();
  }
  
@@ -382,10 +420,17 @@ index e794918..10baf38 100644
 +	return (int)e1000_transmit(buffer, length);
 +}
 +
++static int
++sys_recv(void *buffer, size_t length)
++{
++	user_mem_assert(curenv, buffer, length, PTE_U);
++	return (int)e1000_receive(buffer, length);
++}
++
  // Dispatches to the correct kernel function, passing the arguments.
  int32_t
  syscall(uint32_t syscallno, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4, uint32_t a5)
-@@ -453,8 +461,12 @@ syscall(uint32_t syscallno, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4,
+@@ -453,8 +468,14 @@ syscall(uint32_t syscallno, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4,
  		return sys_ipc_try_send(a1, a2, (void *)a3, a4);
  	case SYS_ipc_recv:
  		return sys_ipc_recv((void *)a1);
@@ -395,6 +440,8 @@ index e794918..10baf38 100644
  		sys_ide_sleep((void *)a1, a2, (int)a3);
 +	case SYS_send:
 +		return sys_send((const void*)a1, a2);
++	case SYS_recv:
++		return sys_recv((void *)a1, a2);
  	case NSYSCALLS:
  	default:
  		return -E_INVAL;
@@ -422,10 +469,10 @@ index 37014bf..ce81dd4 100644
  	print_trapframe(tf);
  	if (tf->tf_cs == GD_KT)
 diff --git a/lib/syscall.c b/lib/syscall.c
-index 8663cfd..210f9de 100644
+index 8663cfd..1438f02 100644
 --- a/lib/syscall.c
 +++ b/lib/syscall.c
-@@ -170,3 +170,9 @@ sys_ide_sleep(void *chan, size_t nsecs, int op)
+@@ -170,3 +170,15 @@ sys_ide_sleep(void *chan, size_t nsecs, int op)
  	// can't use sysenter, since we need to restore our flags from trapframe
  	syscall(SYS_ide_sleep, 0, (uint32_t)chan, nsecs, (uint32_t)op, 0, 0);
  }
@@ -435,8 +482,38 @@ index 8663cfd..210f9de 100644
 +{
 +	return sysenter(SYS_send, (uint32_t)buffer, length, 0, 0);
 +}
++
++int 
++sys_recv(void *buffer, size_t length)
++{
++	return sysenter(SYS_recv, (uint32_t)buffer, length, 0, 0);
++}
+diff --git a/net/input.c b/net/input.c
+index 4e08f0f..0df1825 100644
+--- a/net/input.c
++++ b/net/input.c
+@@ -13,4 +13,19 @@ input(envid_t ns_envid)
+ 	// Hint: When you IPC a page to the network server, it will be
+ 	// reading from it for a while, so don't immediately receive
+ 	// another packet in to the same physical page.
++	int r;
++	// trigger a page fault in user space, otherwise we will fault in kernel mode....
++	nsipcbuf.pkt.jp_data[0] = '\0';
++
++	while (1)
++	{
++		while ((r = sys_recv(nsipcbuf.pkt.jp_data, 1518)) == 0) sys_yield();
++		if (r > 0)
++		{
++			nsipcbuf.pkt.jp_len = r;
++			ipc_send(ns_envid, NSREQ_INPUT, (void *)&nsipcbuf, PTE_P|PTE_W|PTE_U);
++			for (int i = 0; i < 10; i++)
++            	sys_yield();
++		}
++	}
+ }
 diff --git a/net/output.c b/net/output.c
-index f577c4e..6846c80 100644
+index f577c4e..9d483fb 100644
 --- a/net/output.c
 +++ b/net/output.c
 @@ -10,4 +10,27 @@ output(envid_t ns_envid)
@@ -456,7 +533,7 @@ index f577c4e..6846c80 100644
 +		if (reqno == NSREQ_OUTPUT)
 +		{
 +		retry:
-+			while ((r = sys_send((const void*)ptr, total)) == 0);
++			while ((r = sys_send((const void*)ptr, total)) == 0) sys_yield();
 +			if (r < total)
 +			{
 +				ptr += r;
