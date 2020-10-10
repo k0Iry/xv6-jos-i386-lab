@@ -1,4 +1,4 @@
-From 014e0818cad888293737215bdb9664de7ba16db0 Mon Sep 17 00:00:00 2001
+From d344a93318acf0505e9d6033b780da29d8e68ea3 Mon Sep 17 00:00:00 2001
 From: Aaron <kljsandjb@me.com>
 Date: Thu, 1 Oct 2020 13:06:11 +0000
 Subject: [PATCH] start with lab 6
@@ -43,10 +43,10 @@ e1000: unicast match[0]: 52:54:00:12:34:56
  kern/syscall.c              |  23 ++++-
  kern/trap.c                 |   5 +-
  lib/syscall.c               |  12 +++
- net/input.c                 |  15 +++
+ net/input.c                 |  16 +++
  net/output.c                |  23 +++++
  user/testtime.c             |   4 +-
- 12 files changed, 329 insertions(+), 6 deletions(-)
+ 12 files changed, 330 insertions(+), 6 deletions(-)
  create mode 100644 .github/workflows/c-cpp.yml
 
 diff --git a/.github/workflows/c-cpp.yml b/.github/workflows/c-cpp.yml
@@ -489,10 +489,10 @@ index 8663cfd..1438f02 100644
 +	return sysenter(SYS_recv, (uint32_t)buffer, length, 0, 0);
 +}
 diff --git a/net/input.c b/net/input.c
-index 4e08f0f..0df1825 100644
+index 4e08f0f..8a11233 100644
 --- a/net/input.c
 +++ b/net/input.c
-@@ -13,4 +13,19 @@ input(envid_t ns_envid)
+@@ -13,4 +13,20 @@ input(envid_t ns_envid)
  	// Hint: When you IPC a page to the network server, it will be
  	// reading from it for a while, so don't immediately receive
  	// another packet in to the same physical page.
@@ -507,8 +507,9 @@ index 4e08f0f..0df1825 100644
 +		{
 +			nsipcbuf.pkt.jp_len = r;
 +			ipc_send(ns_envid, NSREQ_INPUT, (void *)&nsipcbuf, PTE_P|PTE_W|PTE_U);
++			// we just enabled our parent env, yield a bit waiting for it to run
 +			for (int i = 0; i < 10; i++)
-+            	sys_yield();
++				sys_yield();
 +		}
 +	}
  }
