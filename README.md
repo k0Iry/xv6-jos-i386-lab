@@ -485,11 +485,58 @@ Score: 150/150
 
 ```
 make[1]: Leaving directory '/home/runner/work/6.828_2018_mit_jos/6.828_2018_mit_jos'
-testtime: OK (8.2s) 
+testtime: OK (7.6s) 
 pci attach: OK (0.7s) 
-testoutput [5 packets]: OK (1.1s) 
-testoutput [100 packets]: OK (0.9s) 
+testoutput [5 packets]: OK (1.2s) 
+testoutput [100 packets]: OK (1.1s) 
 Part A score: 35/35
+
+testinput [5 packets]: OK (2.0s) 
+testinput [100 packets]: OK (2.0s) 
+tcp echo server [echosrv]: OK (1.0s) 
+web server [httpd]: 
+  http://localhost:26003/: FAIL (6.0s) 
+    AssertionError: got:
+      (Error: timed out)
+    expected:
+      (Status 404)
+    
+    Packet capture saved to qemu.pcap.httpd_test-
+    QEMU output saved to jos.out.httpd_test-
+  http://localhost:26003/index.html: FAIL (6.9s) 
+    AssertionError: got:
+      (Error: timed out)
+    expected:
+      (Status 200)
+      <html>
+      <head>
+      	<title>jhttpd on JOS</title>
+      </head>
+      <body>
+      	<center>
+      		<h2>This file came from JOS.</h2>
+      		<marquee>Cheesy web page!</marquee>
+      	</center>
+      </body>
+      </html>
+      
+    
+    Packet capture saved to qemu.pcap.httpd_test-index.html
+    QEMU output saved to jos.out.httpd_test-index.html
+  http://localhost:26003/random_file.txt: FAIL (5.9s) 
+    AssertionError: got:
+      (Error: timed out)
+    expected:
+      (Status 404)
+    
+    Packet capture saved to qemu.pcap.httpd_test-random_file.txt
+    QEMU output saved to jos.out.httpd_test-random_file.txt
+Part B score: 40/70
+
+Score: 75/105
+make: *** [grade] Error 1
+GNUmakefile:222: recipe for target 'grade' failed
+Error: Process completed with exit code 2.
 ```
 
 XV6:
