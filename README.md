@@ -1,18 +1,30 @@
 # xv6-jos-i386-lab
-part of my lab implementation of xv6 2018 course of MIT
+My lab implementation of 6.828 **2018** OS course of MIT.
+
+All labs are finished. *(Lab 4 & Lab6 without challenge questions)*.
 
 # Get Started
-I built a [docker image](https://hub.docker.com/r/kljsandjb/6.828) for this course, welcome to use :)
+Build a docker image for this course:
+
+`docker build --tag 6.828 .`
 
 `docker run -d --name=6.828 -v /local/path/to/6.828/:/usr/src/app --rm -it kljsandjb/6.828:latest`
 
-to attach and debug:
-
-`docker exec -it 6.828 /bin/bash`
-
 Recommend to use **remote container** of Visual Studio Code.
 
-# Results:
+## Please note!
+**On macOS or Windows, the performance of IO in docker container is really bad, so the compile & run time could be much longer than on the host.**
+
+On macOS, I built the tool chain, to use:
+
+```
+brew tap k0Iry/i386-jos-toolchains
+brew install i386-jos-elf-gcc i386-jos-elf-gdb
+```
+
+But still you need to compile the 6.828 QEMU here: https://pdos.csail.mit.edu/6.828/2018/tools.html
+
+# Results (ALL LABS finished):
 JOS:
 
 ## LAB 2:
