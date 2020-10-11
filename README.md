@@ -3,6 +3,8 @@ My lab implementation of 6.828 **2018** OS course of MIT.
 
 All labs are finished. *(Lab 4 & Lab6 without challenge questions)*.
 
+Check complete source code here: https://github.com/k0Iry/6.828_2018_mit_jos
+
 # Get Started
 Build a docker image for this course:
 
