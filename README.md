@@ -25,7 +25,7 @@ brew install i386-jos-elf-gcc i386-jos-elf-gdb
 But still you need to compile the 6.828 QEMU here: https://pdos.csail.mit.edu/6.828/2018/tools.html
 
 # Results (ALL LABS finished):
-JOS:
+JOS: ![CI](https://github.com/k0Iry/6.828_2018_mit_jos/workflows/CI/badge.svg?branch=lab6)
 
 ## LAB 2:
 
@@ -493,7 +493,6 @@ Score: 150/150
 ```
 
 ## LAB 6:
-![CI](https://github.com/k0Iry/6.828_2018_mit_jos/workflows/CI/badge.svg?branch=lab6)
 
 ```
 make[1]: Leaving directory '/home/runner/work/6.828_2018_mit_jos/6.828_2018_mit_jos'
