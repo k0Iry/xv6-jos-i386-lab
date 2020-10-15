@@ -1,0 +1,263 @@
+From 23904d031374caa3f3d3d16de45ce6cc5049b15b Mon Sep 17 00:00:00 2001
+From: Aaron <kljsandjb@me.com>
+Date: Thu, 15 Oct 2020 17:33:03 +0200
+Subject: [PATCH] HW: Big files finished
+
+---
+ Makefile  |  4 +++-
+ big.c     | 53 +++++++++++++++++++++++++++++++++++++++++++++++++++++
+ file.h    |  2 +-
+ fs.c      | 27 +++++++++++++++++++++++++++
+ fs.h      |  6 +++---
+ param.h   |  2 +-
+ pipe.c    |  4 ++++
+ syscall.c | 26 +++++++++++++-------------
+ sysfile.c |  4 ++--
+ 9 files changed, 107 insertions(+), 21 deletions(-)
+ create mode 100644 big.c
+
+diff --git a/Makefile b/Makefile
+index e84f397..25bbca6 100644
+--- a/Makefile
++++ b/Makefile
+@@ -189,6 +189,7 @@ UPROGS=\
+ 	_sbrktest\
+ 	_alarmtest\
+ 	_uthread\
++	_big\
+ 
+ fs.img: mkfs README $(UPROGS)
+ 	./mkfs fs.img README $(UPROGS)
+@@ -225,8 +226,9 @@ QEMUGDB = $(shell if $(QEMU) -help | grep -q '^-gdb'; \
+ 	then echo "-gdb tcp::$(GDBPORT)"; \
+ 	else echo "-s -p $(GDBPORT)"; fi)
+ ifndef CPUS
+-CPUS := 2
++CPUS := 1
+ endif
++QEMUEXTRA = -snapshot
+ QEMUOPTS = -drive file=fs.img,index=1,media=disk,format=raw -drive file=xv6.img,index=0,media=disk,format=raw -smp $(CPUS) -m 512 $(QEMUEXTRA)
+ 
+ qemu: fs.img xv6.img
+diff --git a/big.c b/big.c
+new file mode 100644
+index 0000000..cecf1a0
+--- /dev/null
++++ b/big.c
+@@ -0,0 +1,53 @@
++#include "types.h"
++#include "stat.h"
++#include "user.h"
++#include "fcntl.h"
++
++int
++main()
++{
++  char buf[512];
++  int fd, i, sectors;
++
++  fd = open("big.file", O_CREATE | O_WRONLY);
++  if(fd < 0){
++    printf(2, "big: cannot open big.file for writing\n");
++    exit();
++  }
++
++  sectors = 0;
++  while(1){
++    *(int*)buf = sectors;
++    int cc = write(fd, buf, sizeof(buf));
++    if(cc <= 0)
++      break;
++    sectors++;
++	if (sectors % 100 == 0)
++		printf(2, ".");
++  }
++
++  printf(1, "\nwrote %d sectors\n", sectors);
++
++  close(fd);
++  fd = open("big.file", O_RDONLY);
++  if(fd < 0){
++    printf(2, "big: cannot re-open big.file for reading\n");
++    exit();
++  }
++  for(i = 0; i < sectors; i++){
++    int cc = read(fd, buf, sizeof(buf));
++    if(cc <= 0){
++      printf(2, "big: read error at sector %d\n", i);
++      exit();
++    }
++    if(*(int*)buf != i){
++      printf(2, "big: read the wrong data (%d) for sector %d\n",
++             *(int*)buf, i);
++      exit();
++    }
++  }
++
++  printf(1, "done; ok\n"); 
++
++  exit();
++}
+diff --git a/file.h b/file.h
+index 4e613d7..5fb5420 100644
+--- a/file.h
++++ b/file.h
+@@ -21,7 +21,7 @@ struct inode {
+   short minor;
+   short nlink;
+   uint size;
+-  uint addrs[NDIRECT + 1];
++  uint addrs[NDIRECT + 2];
+ };
+ 
+ // table mapping major device number to
+diff --git a/fs.c b/fs.c
+index ea08c95..e238fcc 100644
+--- a/fs.c
++++ b/fs.c
+@@ -367,6 +367,33 @@ static uint bmap(struct inode *ip, uint bn) {
+     brelse(bp);
+     return addr;
+   }
++  bn -= NINDIRECT;
++
++  if (bn < NINDIRECT * NINDIRECT)
++  {
++    if ((addr = ip->addrs[NDIRECT + 1]) == 0)
++      ip->addrs[NDIRECT + 1] = addr = balloc(ip->dev);
++    bp = bread(ip->dev, addr);
++    a = (uint *)bp->data;
++    if ((addr = a[bn / NINDIRECT]) == 0)
++    {
++      // allocate singly-indirect block as needed
++      a[bn / NINDIRECT] = addr = balloc(ip->dev);
++      log_write(bp);
++    }
++    brelse(bp);
++    // read 1 of 128 singly-indirect blocks
++    bp = bread(ip->dev, addr);
++    a = (uint *)bp->data;
++    if ((addr = a[bn % NINDIRECT]) == 0)
++    {
++      a[bn % NINDIRECT] = addr = balloc(ip->dev);
++      log_write(bp);
++    }
++    brelse(bp);
++
++    return addr;
++  }
+ 
+   panic("bmap: out of range");
+ }
+diff --git a/fs.h b/fs.h
+index ff03b95..8547ea7 100644
+--- a/fs.h
++++ b/fs.h
+@@ -20,9 +20,9 @@ struct superblock {
+   uint bmapstart;  // Block number of first free map block
+ };
+ 
+-#define NDIRECT 12
++#define NDIRECT 11
+ #define NINDIRECT (BSIZE / sizeof(uint))
+-#define MAXFILE (NDIRECT + NINDIRECT)
++#define MAXFILE (NDIRECT + NINDIRECT + (NINDIRECT * NINDIRECT))
+ 
+ // On-disk inode structure
+ struct dinode {
+@@ -31,7 +31,7 @@ struct dinode {
+   short minor;             // Minor device number (T_DEV only)
+   short nlink;             // Number of links to inode in file system
+   uint size;               // Size of file (bytes)
+-  uint addrs[NDIRECT + 1]; // Data block addresses
++  uint addrs[NDIRECT + 2]; // Data block addresses
+ };
+ 
+ // Inodes per block.
+diff --git a/param.h b/param.h
+index 5cade8f..35b52af 100644
+--- a/param.h
++++ b/param.h
+@@ -10,4 +10,4 @@
+ #define MAXOPBLOCKS 10            // max # of blocks any FS op writes
+ #define LOGSIZE (MAXOPBLOCKS * 3) // max data blocks in on-disk log
+ #define NBUF (MAXOPBLOCKS * 3)    // size of disk block cache
+-#define FSSIZE 1000               // size of file system in blocks
++#define FSSIZE 20000              // size of file system in blocks
+diff --git a/pipe.c b/pipe.c
+index 0d9e9b8..634a7b4 100644
+--- a/pipe.c
++++ b/pipe.c
+@@ -90,6 +90,10 @@ int pipewrite(struct pipe *p, char *addr, int n) {
+         return -1;
+       }
+       wakeup(&p->nread);
++      // there is a race between sleep and kill
++      // if a p1 is killing p2 after p2's 'myproc()->killed' check,
++      // and before p2 goes to sleep, p1 lost wake up for the p2
++      // p2 will have to wait for another round to be killed
+       sleep(&p->nwrite, &p->lock); // DOC: pipewrite-sleep
+     }
+     p->data[p->nwrite++ % PIPESIZE] = addr[i];
+diff --git a/syscall.c b/syscall.c
+index 3f4edde..bd04eea 100644
+--- a/syscall.c
++++ b/syscall.c
+@@ -114,17 +114,17 @@ static int (*syscalls[])(void) = {
+ 
+ // use a string table for the name, any better idea?
+ // use STAB to get the name from debug information, will do it later
+-static char *syscallnames[] = {
+-    [SYS_fork] "fork",   [SYS_exit] "exit",     [SYS_wait] "wait",
+-    [SYS_pipe] "pipe",   [SYS_read] "read",     [SYS_kill] "kill",
+-    [SYS_exec] "exec",   [SYS_fstat] "fstat",   [SYS_chdir] "chdir",
+-    [SYS_dup] "dup",     [SYS_getpid] "getpid", [SYS_sbrk] "sbrk",
+-    [SYS_sleep] "sleep", [SYS_uptime] "uptime", [SYS_open] "open",
+-    [SYS_write] "write", [SYS_mknod] "mknod",   [SYS_unlink] "unlink",
+-    [SYS_link] "link",   [SYS_mkdir] "mkdir",   [SYS_close] "close",
+-    [SYS_date] "date",   [SYS_dup2] "dup2",     [SYS_alarm] "alarm",
+-    [SYS_clone] "clone", [SYS_sched_yield] "yield",
+-};
++// static char *syscallnames[] = {
++//     [SYS_fork] "fork",   [SYS_exit] "exit",     [SYS_wait] "wait",
++//     [SYS_pipe] "pipe",   [SYS_read] "read",     [SYS_kill] "kill",
++//     [SYS_exec] "exec",   [SYS_fstat] "fstat",   [SYS_chdir] "chdir",
++//     [SYS_dup] "dup",     [SYS_getpid] "getpid", [SYS_sbrk] "sbrk",
++//     [SYS_sleep] "sleep", [SYS_uptime] "uptime", [SYS_open] "open",
++//     [SYS_write] "write", [SYS_mknod] "mknod",   [SYS_unlink] "unlink",
++//     [SYS_link] "link",   [SYS_mkdir] "mkdir",   [SYS_close] "close",
++//     [SYS_date] "date",   [SYS_dup2] "dup2",     [SYS_alarm] "alarm",
++//     [SYS_clone] "clone", [SYS_sched_yield] "yield",
++// };
+ 
+ // breakpoint here, x/37x
+ // (gdb) x/37x $esp
+@@ -168,8 +168,8 @@ void syscall(void) {
+     //   cprintf("first argument: %s\n", argument);
+ 
+     curproc->tf->eax = syscalls[num]();
+-    if (num != SYS_write)
+-      cprintf("%s -> %d\n\n", syscallnames[num], curproc->tf->eax);
++    // if (num != SYS_write)
++    //   cprintf("%s -> %d\n\n", syscallnames[num], curproc->tf->eax);
+   } else {
+     cprintf("%d %s: unknown sys call %d\n", curproc->pid, curproc->name, num);
+     curproc->tf->eax = -1;
+diff --git a/sysfile.c b/sysfile.c
+index 5db20fc..d019fa4 100644
+--- a/sysfile.c
++++ b/sysfile.c
+@@ -88,8 +88,8 @@ int sys_read(void) {
+ 
+   if (argfd(0, 0, &f) < 0 || argint(2, &n) < 0 || argptr(1, &p, n) < 0)
+     return -1;
+-  cprintf("read on file object %p, file buffer address: %p, size %d\n", f, p,
+-          n);
++  // cprintf("read on file object %p, file buffer address: %p, size %d\n", f, p,
++          // n);
+   return fileread(f, p, n);
+ }
+ 
+-- 
+2.24.3 (Apple Git-128)
+
