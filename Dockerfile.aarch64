@@ -1,0 +1,13 @@
+FROM debian:latest
+
+WORKDIR /workdir
+
+RUN apt-get update && \
+    apt install -y wget ca-certificates libgmp3-dev libmpfr-dev libmpc-dev xz-utils xz-utils build-essential qemu-system-x86 texinfo --no-install-recommends
+
+RUN wget https://ftp.gnu.org/gnu/binutils/binutils-2.35.tar.xz && unxz binutils-2.35.tar.xz && tar xfv binutils-2.35.tar && rm binutils-2.35.tar && cd binutils-2.35 && ./configure --prefix=/usr/local --target=i386-jos-elf --disable-werror && make -j 4 && make install && cd .. && rm -rf binutils-2.35
+RUN wget https://ftp.gnu.org/gnu/gcc/gcc-9.5.0/gcc-9.5.0.tar.xz && unxz gcc-9.5.0.tar.xz && tar xvf gcc-9.5.0.tar && rm gcc-9.5.0.tar && cd gcc-9.5.0 && mkdir build && cd build && ../configure --prefix=/usr/local     --target=i386-jos-elf --disable-werror     --disable-libssp --disable-libmudflap --with-newlib     --without-headers --enable-languages=c MAKEINFO=missing && make all-gcc -j 4 && make install-gcc && make all-target-libgcc && make install-target-libgcc && cd ../.. && rm -rf gcc-9.5.0
+RUN wget https://ftp.gnu.org/gnu/gdb/gdb-10.2.tar.xz && unxz gdb-10.2.tar.xz && tar xfv gdb-10.2.tar && rm gdb-10.2.tar && cd gdb-10.2 && ./configure --prefix=/usr/local --target=i386-jos-elf --program-prefix=i386-jos-elf-     --disable-werror && make all -j 4 && make install && cd .. && rm -rf gdb-10.2
+
+
+CMD ["/bin/bash"]
